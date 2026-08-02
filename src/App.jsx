@@ -165,11 +165,272 @@ function HomeScreen({ onSelect }) {
   </div></main>
 }
 
+function priceParts(value) {
+  const rawValue = String(value ?? '').replace(/[^\d,.-]/g, '')
+  const normalizedValue = rawValue.includes(',') && rawValue.includes('.')
+    ? rawValue.replace(/\./g, '').replace(',', '.')
+    : rawValue.replace(',', '.')
+  const numeric = Number(normalizedValue)
+  const [whole, cents] = (Number.isFinite(numeric) ? numeric : 0).toFixed(2).split('.')
+  return { whole, cents }
+}
+
+function titleLines(context, title, maxWidth) {
+  const words = (title || 'PRODUTO EM OFERTA').trim().toUpperCase().split(/\s+/)
+  return words.reduce((lines, word) => {
+    const currentLine = lines.at(-1) || ''
+    const candidate = currentLine ? `${currentLine} ${word}` : word
+    if (context.measureText(candidate).width <= maxWidth || !currentLine) lines[lines.length - 1] = candidate
+    else lines.push(word)
+    return lines
+  }, [''])
+}
+
+function drawPoster(canvas, background, values) {
+  canvas.width = background.naturalWidth || 1334
+  canvas.height = background.naturalHeight || 2000
+  const context = canvas.getContext('2d')
+  context.imageSmoothingEnabled = true
+  context.imageSmoothingQuality = 'high'
+  context.drawImage(background, 0, 0, canvas.width, canvas.height)
+
+  const scale = canvas.width / 1334
+  const x = (value) => value * scale
+  const y = (value) => value * scale
+  const titleWidth = x(1110)
+  let fontSize = x(106)
+  let lines = []
+  while (fontSize >= x(55)) {
+    context.font = `900 ${fontSize}px Arial, sans-serif`
+    lines = titleLines(context, values.product, titleWidth)
+    if (lines.length <= 3) break
+    fontSize -= x(5)
+  }
+  const lineHeight = fontSize * .95
+  const titleCenter = y(500)
+  context.fillStyle = '#4a4210'
+  context.textAlign = 'center'
+  context.textBaseline = 'middle'
+  lines.slice(0, 3).forEach((line, index) => context.fillText(line, canvas.width / 2, titleCenter + (index - (Math.min(lines.length, 3) - 1) / 2) * lineHeight))
+
+  const oldPrice = priceParts(values.oldPrice)
+  const currentPrice = priceParts(values.price)
+  context.fillStyle = '#e6001a'
+  context.textAlign = 'left'
+  context.textBaseline = 'alphabetic'
+  context.font = `900 ${x(66)}px Arial, sans-serif`
+  context.fillText(`DE: R$${oldPrice.whole},${oldPrice.cents}`, x(270), y(850))
+  context.font = `900 ${x(72)}px Arial Narrow, Arial, sans-serif`
+  context.fillText('POR:', x(285), y(1025))
+  context.font = `900 ${x(152)}px Arial Narrow, Arial, sans-serif`
+  const priceSizes = currentPrice.whole.length === 1 ? { main: 600, currency: 152, cents: 220 } : currentPrice.whole.length === 2 ? { main: 440, currency: 130, cents: 176 } : { main: 330, currency: 110, cents: 145 }
+  const gap = x(22)
+  const maxPriceWidth = canvas.width * .88
+  const priceWidth = (multiplier = 1) => {
+    context.font = `900 ${x(priceSizes.currency * multiplier)}px Arial Narrow, Arial, sans-serif`
+    const currencyWidth = context.measureText('R$').width
+    context.font = `900 ${x(priceSizes.main * multiplier)}px Arial Narrow, Arial, sans-serif`
+    const wholeWidth = context.measureText(currentPrice.whole).width
+    context.font = `900 ${x(priceSizes.cents * multiplier)}px Arial Narrow, Arial, sans-serif`
+    const centsWidth = context.measureText(`,${currentPrice.cents}`).width
+    return { currencyWidth, wholeWidth, centsWidth, total: currencyWidth + wholeWidth + centsWidth + gap * 2 }
+  }
+  let textMetrics = priceWidth()
+  const shrink = Math.min(1, maxPriceWidth / textMetrics.total)
+  if (shrink < 1) textMetrics = priceWidth(shrink)
+  const startPrice = (canvas.width - textMetrics.total) / 2
+  context.textAlign = 'left'
+  context.font = `900 ${x(priceSizes.currency * shrink)}px Arial Narrow, Arial, sans-serif`
+  context.fillText('R$', startPrice, y(1265))
+  context.font = `900 ${x(priceSizes.main * shrink)}px Arial Narrow, Arial, sans-serif`
+  context.fillText(currentPrice.whole, startPrice + textMetrics.currencyWidth + gap, y(1460))
+  context.textAlign = 'left'
+  context.font = `900 ${x(priceSizes.cents * shrink)}px Arial Narrow, Arial, sans-serif`
+  context.fillText(`,${currentPrice.cents}`, startPrice + textMetrics.currencyWidth + gap + textMetrics.wholeWidth + gap, y(1390))
+}
+
+function canvasBlob(canvas, type, quality) {
+  return new Promise((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Não foi possível gerar o arquivo.')), type, quality))
+}
+
+function mergeBytes(chunks) {
+  const totalLength = chunks.reduce((total, chunk) => total + chunk.length, 0)
+  const merged = new Uint8Array(totalLength)
+  let offset = 0
+  chunks.forEach((chunk) => { merged.set(chunk, offset); offset += chunk.length })
+  return merged
+}
+
+async function postersPdfBlob(canvases) {
+  const encode = (text) => new TextEncoder().encode(text)
+  const images = await Promise.all(canvases.map(async (canvas) => ({ canvas, jpeg: new Uint8Array(await (await canvasBlob(canvas, 'image/jpeg', .96)).arrayBuffer()) })))
+  let nextObject = 3
+  const pages = images.map((image) => ({ ...image, pageObject: nextObject++, contentObject: nextObject++, imageObject: nextObject++ }))
+  const objects = [
+    { id: 1, value: encode('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n') },
+    { id: 2, value: encode(`2 0 obj\n<< /Type /Pages /Kids [${pages.map((page) => `${page.pageObject} 0 R`).join(' ')}] /Count ${pages.length} >>\nendobj\n`) },
+  ]
+  pages.forEach((page) => {
+    const pageWidth = 720
+    const pageHeight = Math.round(pageWidth * page.canvas.height / page.canvas.width)
+    const content = encode(`q\n${pageWidth} 0 0 ${pageHeight} 0 0 cm\n/Poster${page.imageObject} Do\nQ\n`)
+    objects.push(
+      { id: page.pageObject, value: encode(`${page.pageObject} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /XObject << /Poster${page.imageObject} ${page.imageObject} 0 R >> >> /Contents ${page.contentObject} 0 R >>\nendobj\n`) },
+      { id: page.contentObject, value: mergeBytes([encode(`${page.contentObject} 0 obj\n<< /Length ${content.length} >>\nstream\n`), content, encode('endstream\nendobj\n')]) },
+      { id: page.imageObject, value: mergeBytes([encode(`${page.imageObject} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${page.canvas.width} /Height ${page.canvas.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${page.jpeg.length} >>\nstream\n`), page.jpeg, encode('\nendstream\nendobj\n')]) },
+    )
+  })
+  objects.sort((first, second) => first.id - second.id)
+  const header = encode('%PDF-1.4\n')
+  const offsets = []
+  let position = header.length
+  objects.forEach((object) => { offsets.push(position); position += object.value.length })
+  const xrefPosition = position
+  const xref = encode(`xref\n0 ${nextObject}\n0000000000 65535 f \n${offsets.map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size ${nextObject} /Root 1 0 R >>\nstartxref\n${xrefPosition}\n%%EOF`)
+  return new Blob([header, ...objects.map((object) => object.value), xref], { type: 'application/pdf' })
+}
+
+function offerLayout(itemsPerPage) {
+  const layouts = { 1: [1, 1], 2: [2, 1], 4: [2, 2], 6: [3, 2], 8: [4, 2], 9: [3, 3], 12: [4, 3] }
+  const [columns, rows] = layouts[itemsPerPage] || layouts[8]
+  return { columns, rows }
+}
+
+function drawOfferPage(canvas, background, offers, itemsPerPage) {
+  const { columns, rows } = offerLayout(itemsPerPage)
+  const pageWidth = 1800
+  const cellWidth = pageWidth / columns
+  const cellHeight = cellWidth * 1.5
+  const gap = Math.max(10, Math.round(cellWidth * .018))
+  canvas.width = pageWidth
+  canvas.height = Math.round(cellHeight * rows)
+  const context = canvas.getContext('2d')
+  context.fillStyle = '#fff'
+  context.fillRect(0, 0, canvas.width, canvas.height)
+  offers.forEach((offer, index) => {
+    const poster = document.createElement('canvas')
+    drawPoster(poster, background, offer)
+    const column = index % columns
+    const row = Math.floor(index / columns)
+    const destinationX = column * cellWidth + gap / 2
+    const destinationY = row * cellHeight + gap / 2
+    context.drawImage(poster, destinationX, destinationY, cellWidth - gap, cellHeight - gap)
+  })
+}
+
+function normalizeSpreadsheetText(value) {
+  return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase()
+}
+
+function offersFromSpreadsheet(XLSX, workbook) {
+  for (const sheetName of workbook.SheetNames) {
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: '' })
+    const headerIndex = rows.findIndex((row) => row.some((cell) => normalizeSpreadsheetText(cell).includes('produto')) && row.some((cell) => normalizeSpreadsheetText(cell).includes('promocao')))
+    if (headerIndex < 0) continue
+    const headers = rows[headerIndex].map(normalizeSpreadsheetText)
+    const productColumn = headers.findIndex((header) => header.includes('produto'))
+    const promotionColumn = headers.findIndex((header) => header.includes('promocao'))
+    const normalPriceColumn = headers.findIndex((header) => header.includes('preco normal') || header.includes('valor normal'))
+    if (productColumn < 0 || promotionColumn < 0 || normalPriceColumn < 0) continue
+    const offers = rows.slice(headerIndex + 1).map((row) => ({ product: String(row[productColumn] ?? '').trim(), price: row[promotionColumn], oldPrice: row[normalPriceColumn] })).filter((offer) => offer.product && offer.price !== '')
+    if (offers.length) return offers
+  }
+  throw new Error('Não encontrei as colunas Produto, Vlr.Promoção e Preço Normal no XLS.')
+}
+
+function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob)
+  const link = Object.assign(document.createElement('a'), { href: url, download: name })
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
 function CartazesScreen({ onBack }) {
+  const canvasRef = useRef(null)
+  const batchCanvasRef = useRef(null)
+  const [background, setBackground] = useState(null)
+  const [renderError, setRenderError] = useState('')
+  const [mode, setMode] = useState('individual')
+  const [values, setValues] = useState({ product: 'SONRIDOR RAPID+FORTE 4CP REV', oldPrice: '7,99', price: '1,99' })
+  const [batchOffers, setBatchOffers] = useState([])
+  const [batchFileName, setBatchFileName] = useState('')
+  const [itemsPerPage, setItemsPerPage] = useState(8)
+  const [batchPage, setBatchPage] = useState(0)
+  const [batchLoading, setBatchLoading] = useState(false)
+  const [batchExporting, setBatchExporting] = useState(false)
+
+  useEffect(() => {
+    const image = new Image()
+    image.onload = () => setBackground(image)
+    image.onerror = () => setRenderError('Não foi possível carregar o modelo oficial do cartaz.')
+    image.src = '/oferta-background.png'
+  }, [])
+
+  useEffect(() => {
+    if (background && canvasRef.current) drawPoster(canvasRef.current, background, values)
+  }, [background, values])
+
+  const totalBatchPages = Math.max(1, Math.ceil(batchOffers.length / itemsPerPage))
+  const visibleBatchOffers = batchOffers.slice(batchPage * itemsPerPage, (batchPage + 1) * itemsPerPage)
+
+  useEffect(() => {
+    if (batchPage >= totalBatchPages) setBatchPage(Math.max(0, totalBatchPages - 1))
+  }, [batchPage, totalBatchPages])
+
+  useEffect(() => {
+    if (background && visibleBatchOffers.length && batchCanvasRef.current) drawOfferPage(batchCanvasRef.current, background, visibleBatchOffers, itemsPerPage)
+  }, [background, visibleBatchOffers, itemsPerPage])
+
+  async function downloadPoster(format) {
+    try {
+      const canvas = canvasRef.current
+      if (!canvas || !background) return
+      const productSlug = values.product.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'oferta'
+      if (format === 'pdf') saveBlob(await postersPdfBlob([canvas]), `cartaz-${productSlug}.pdf`)
+      else saveBlob(await canvasBlob(canvas, format === 'png' ? 'image/png' : 'image/jpeg', .96), `cartaz-${productSlug}.${format === 'png' ? 'png' : 'jpg'}`)
+    } catch (exception) { setRenderError(exception.message || 'Não foi possível baixar o cartaz.') }
+  }
+
+  async function importOffers(file) {
+    if (!file) return
+    setRenderError('')
+    setBatchLoading(true)
+    try {
+      const XLSX = await import('xlsx')
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' })
+      const offers = offersFromSpreadsheet(XLSX, workbook)
+      setBatchOffers(offers)
+      setBatchFileName(file.name)
+      setBatchPage(0)
+      setMode('batch')
+    } catch (exception) { setRenderError(exception.message || 'Não foi possível ler o XLS enviado.') }
+    finally { setBatchLoading(false) }
+  }
+
+  function createBatchPages() {
+    return Array.from({ length: totalBatchPages }, (_, index) => {
+      const page = document.createElement('canvas')
+      drawOfferPage(page, background, batchOffers.slice(index * itemsPerPage, (index + 1) * itemsPerPage), itemsPerPage)
+      return page
+    })
+  }
+
+  async function downloadBatch(format) {
+    try {
+      if (!background || !visibleBatchOffers.length) return
+      setBatchExporting(true)
+      if (format === 'pdf') saveBlob(await postersPdfBlob(createBatchPages()), `cartazes-oferta-${batchOffers.length}-itens.pdf`)
+      else saveBlob(await canvasBlob(batchCanvasRef.current, 'image/png'), `cartazes-oferta-pagina-${batchPage + 1}.png`)
+    } catch (exception) { setRenderError(exception.message || 'Não foi possível gerar o arquivo do lote.') }
+    finally { setBatchExporting(false) }
+  }
+
   return <main className="app-shell home-shell"><div className="brand-glow brand-glow-one" /><div className="brand-glow brand-glow-two" /><div className="app-container">
     <header className="home-topbar"><button className="back-button" onClick={onBack}>← Todos os sistemas</button><div className="brand-logo-wrap"><img className="brand-logo" src="/drogaria-center-logo.png" alt="Drogaria Center" /></div></header>
-    <section className="future-panel"><span className="future-icon" aria-hidden="true">✦</span><p className="brand-kicker">Próximo sistema</p><h1>Gerador de cartazes de oferta</h1><p>Este espaço já está preparado para a ferramenta que vai criar artes de promoção prontas para impressão.</p><div className="future-features"><span>Preço em destaque</span><span>Modelos de oferta</span><span>Pronto para imprimir</span></div><button className="primary-button future-back" onClick={onBack}>Voltar para os sistemas <b aria-hidden="true">→</b></button></section>
-    <footer className="app-footer"><img src="/drogaria-center-logo.png" alt="Drogaria Center" /><span>Ferramentas simples para a rotina da farmácia.</span></footer>
+    <section className="poster-heading"><div><p className="brand-kicker">Comunicação visual</p><h1>Gerador de cartazes de oferta</h1><p>Crie um cartaz individual ou importe uma planilha para montar várias ofertas de uma vez.</p></div><span className="poster-live"><i />Prévia ao vivo</span></section>
+    <div className="poster-mode-toggle" role="tablist" aria-label="Modo de criação"><button role="tab" aria-selected={mode === 'individual'} className={mode === 'individual' ? 'active' : ''} onClick={() => setMode('individual')}>Cartaz individual</button><button role="tab" aria-selected={mode === 'batch'} className={mode === 'batch' ? 'active' : ''} onClick={() => setMode('batch')}>Lote por XLS</button></div>
+    {mode === 'individual' ? <section className="poster-studio"><form className="poster-form" onSubmit={(event) => event.preventDefault()}><div className="poster-form-title"><span className="future-icon" aria-hidden="true">✦</span><div><span className="section-kicker">Dados da oferta</span><h2>Monte seu cartaz</h2></div></div><label>Nome do produto<textarea value={values.product} maxLength="70" onChange={(event) => setValues((current) => ({ ...current, product: event.target.value }))} placeholder="Ex.: SONRIDOR RAPID+FORTE 4CP REV" /></label><div className="price-fields"><label>Preço anterior<input inputMode="decimal" value={values.oldPrice} onChange={(event) => setValues((current) => ({ ...current, oldPrice: event.target.value }))} placeholder="7,99" /></label><label>Preço da oferta<input inputMode="decimal" value={values.price} onChange={(event) => setValues((current) => ({ ...current, price: event.target.value }))} placeholder="1,99" /></label></div><p className="poster-tip">Use vírgula para os centavos. O cartaz segue o modelo oficial enviado.</p><div className="download-actions"><button type="button" disabled={!background} onClick={() => downloadPoster('pdf')}>⇩ Baixar PDF</button><button type="button" disabled={!background} onClick={() => downloadPoster('png')}>⇩ Baixar PNG</button><button type="button" disabled={!background} onClick={() => downloadPoster('jpg')}>⇩ Baixar JPG</button></div>{renderError && <p className="poster-error" role="alert">{renderError}</p>}</form><section className="poster-preview-panel"><div className="poster-preview-label"><span>Prévia para impressão</span><small>Formato vertical</small></div><div className="poster-canvas-wrap"><canvas ref={canvasRef} aria-label="Prévia do cartaz de oferta" /></div></section></section> : <section className="poster-studio batch-studio"><form className="poster-form" onSubmit={(event) => event.preventDefault()}><div className="poster-form-title"><span className="future-icon" aria-hidden="true">▦</span><div><span className="section-kicker">Lote de ofertas</span><h2>Importe sua planilha</h2></div></div><label className="batch-upload">{batchLoading ? 'Lendo a planilha...' : 'Selecionar arquivo XLS ou XLSX'}<input type="file" accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => importOffers(event.target.files?.[0])} /></label>{batchFileName && <div className="batch-file-status"><b>{batchFileName}</b><span>{batchOffers.length} ofertas identificadas</span></div>}<label className="items-per-page">Cartazes por página<select value={itemsPerPage} onChange={(event) => { setItemsPerPage(Number(event.target.value)); setBatchPage(0) }}><option value="1">1 por página</option><option value="2">2 por página</option><option value="4">4 por página</option><option value="6">6 por página</option><option value="8">8 por página (referência)</option><option value="9">9 por página</option><option value="12">12 por página</option></select></label><p className="poster-tip">O XLS enviado foi reconhecido pelas colunas Produto, Vlr.Promoção e Preço Normal.</p><div className="download-actions"><button type="button" disabled={!background || !batchOffers.length || batchExporting} onClick={() => downloadBatch('pdf')}>{batchExporting ? 'Gerando arquivo...' : '⇩ Baixar PDF completo'}</button><button type="button" disabled={!background || !batchOffers.length || batchExporting} onClick={() => downloadBatch('png')}>⇩ Baixar PNG da página</button></div>{renderError && <p className="poster-error" role="alert">{renderError}</p>}</form><section className="poster-preview-panel"><div className="poster-preview-label"><span>Prévia do lote</span><small>{batchOffers.length ? `Página ${batchPage + 1} de ${totalBatchPages}` : 'Aguardando planilha'}</small></div>{batchOffers.length ? <><div className="poster-canvas-wrap batch-canvas-wrap"><canvas ref={batchCanvasRef} aria-label="Prévia da página de cartazes" /></div><div className="batch-pagination"><button type="button" disabled={batchPage === 0} onClick={() => setBatchPage((page) => page - 1)}>← Anterior</button><span>{visibleBatchOffers.length} cartazes nesta página</span><button type="button" disabled={batchPage + 1 >= totalBatchPages} onClick={() => setBatchPage((page) => page + 1)}>Próxima →</button></div></> : <div className="batch-empty"><span>▦</span><b>Envie uma planilha para visualizar o lote.</b><small>Você poderá escolher quantos cartazes saem em cada página.</small></div>}</section></section>}
+    <footer className="app-footer"><img src="/drogaria-center-logo.png" alt="Drogaria Center" /><span>Cartazes de oferta prontos para imprimir.</span></footer>
   </div></main>
 }
 
