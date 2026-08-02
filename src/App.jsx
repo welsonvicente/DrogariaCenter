@@ -1,15 +1,21 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   extractPdfLines, formatMoney, operatorName, parseCieloLines, parsePagPixLines,
   parsePagPixSpreadsheet, parseTrierLines, parseTrierSpreadsheet, reconcile, STATUS_LABEL,
 } from './reconciliation.js'
 
 const EMPTY_FILES = { trier: null, pagpix: null, cielo: null, fechamento: null }
+const SYSTEM_PATHS = { home: '/', trier: '/conciliacao-trier', cartazes: '/cartazes-oferta' }
 const SOURCES = {
   trier: { title: 'Relação de Vendas (Trier)', hint: 'Base principal — obrigatório', color: 'bg-ink', step: '01', badge: 'Obrigatório' },
   pagpix: { title: 'Relatório Detalhado PaggPix', hint: 'Recebimentos PIX', color: 'bg-teal', step: '02', badge: 'PIX' },
   cielo: { title: 'Relatório Detalhado Cielo', hint: 'Recebimentos cartão', color: 'bg-amber', step: '03', badge: 'Cartão' },
   fechamento: { title: 'Fechamento de Caixa', hint: 'Opcional', color: 'bg-muted', step: '04', badge: 'Opcional' },
+}
+
+function systemFromPathname(pathname) {
+  const normalizedPath = pathname.replace(/\/+$/, '') || '/'
+  return Object.entries(SYSTEM_PATHS).find(([, path]) => path === normalizedPath)?.[0] || 'home'
 }
 
 function FileSlot({ source, file, onFile }) {
@@ -146,7 +152,29 @@ async function downloadExcel(output) {
   URL.revokeObjectURL(url)
 }
 
+function HomeScreen({ onSelect }) {
+  return <main className="app-shell home-shell"><div className="brand-glow brand-glow-one" /><div className="brand-glow brand-glow-two" /><div className="app-container">
+    <header className="home-topbar"><div className="brand-logo-wrap"><img className="brand-logo" src="/drogaria-center-logo.png" alt="Drogaria Center" /></div><div className="local-chip home-chip"><span />Sistemas internos</div></header>
+    <section className="home-hero"><p className="brand-kicker">Drogaria Center</p><h1>Olá! O que vamos<br />fazer hoje?</h1><p>Escolha uma ferramenta para começar. Tudo foi pensado para tornar a rotina da farmácia mais simples.</p></section>
+    <section className="system-grid" aria-label="Sistemas disponíveis">
+      <button className="system-card system-card-reconcile" onClick={() => onSelect('trier')}><span className="system-icon" aria-hidden="true">↔</span><span className="system-label">Financeiro</span><strong>Conciliação Trier</strong><small>Compare vendas, PIX e cartões em um só lugar.</small><span className="system-action">Abrir conciliação <b aria-hidden="true">→</b></span></button>
+      <button className="system-card system-card-posters" onClick={() => onSelect('cartazes')}><span className="system-icon" aria-hidden="true">✦</span><span className="system-label">Comunicação visual</span><strong>Cartazes de oferta</strong><small>Crie cartazes prontos para imprimir e expor na farmácia.</small><span className="system-action">Criar cartazes <b aria-hidden="true">→</b></span></button>
+    </section>
+    <p className="home-support">Mais ferramentas serão adicionadas aqui conforme a operação da Drogaria Center evoluir.</p>
+    <footer className="app-footer"><img src="/drogaria-center-logo.png" alt="Drogaria Center" /><span>Ferramentas simples para a rotina da farmácia.</span></footer>
+  </div></main>
+}
+
+function CartazesScreen({ onBack }) {
+  return <main className="app-shell home-shell"><div className="brand-glow brand-glow-one" /><div className="brand-glow brand-glow-two" /><div className="app-container">
+    <header className="home-topbar"><button className="back-button" onClick={onBack}>← Todos os sistemas</button><div className="brand-logo-wrap"><img className="brand-logo" src="/drogaria-center-logo.png" alt="Drogaria Center" /></div></header>
+    <section className="future-panel"><span className="future-icon" aria-hidden="true">✦</span><p className="brand-kicker">Próximo sistema</p><h1>Gerador de cartazes de oferta</h1><p>Este espaço já está preparado para a ferramenta que vai criar artes de promoção prontas para impressão.</p><div className="future-features"><span>Preço em destaque</span><span>Modelos de oferta</span><span>Pronto para imprimir</span></div><button className="primary-button future-back" onClick={onBack}>Voltar para os sistemas <b aria-hidden="true">→</b></button></section>
+    <footer className="app-footer"><img src="/drogaria-center-logo.png" alt="Drogaria Center" /><span>Ferramentas simples para a rotina da farmácia.</span></footer>
+  </div></main>
+}
+
 export default function App() {
+  const [activeSystem, setActiveSystem] = useState(() => systemFromPathname(window.location.pathname))
   const [files, setFiles] = useState(EMPTY_FILES)
   const [toleranceValue, setToleranceValue] = useState(0.5)
   const [toleranceHours, setToleranceHours] = useState(2)
@@ -190,10 +218,26 @@ export default function App() {
   const kpis = [['Total de vendas', counts.total], ['Vendas PIX', counts.pix], ['Vendas cartão', counts.card], ['Conciliadas', counts.reconciled], ['Não conciliadas', counts.missing], ['PIX sem venda', counts.pixNoSale], ['Cartão sem venda', counts.cardNoSale], ['Recebimentos duplicados', counts.duplicates], ['Valor conciliado', formatMoney(matchedValue)], ['Valor divergente', formatMoney(divergentValue)], ['% conciliação', `${totalValue ? ((matchedValue / totalValue) * 100).toFixed(1) : '0.0'}%`]]
   const tabs = [['resumo', 'Resumo'], ['conciliada', `Conciliadas (${counts.reconciled})`], ['divergencia', `Divergências (${counts.divergent})`], ['sem_recebimento', `Sem recebimento (${counts.missing})`], ['sem_venda', `Sem venda (${noSale.length})`], ...(counts.returns ? [['devolucao', `Devoluções (${counts.returns})`]] : [])]
 
+  useEffect(() => {
+    const syncWithBrowserNavigation = () => setActiveSystem(systemFromPathname(window.location.pathname))
+    window.addEventListener('popstate', syncWithBrowserNavigation)
+    return () => window.removeEventListener('popstate', syncWithBrowserNavigation)
+  }, [])
+
+  function navigateTo(system) {
+    const path = SYSTEM_PATHS[system]
+    if (window.location.pathname !== path) window.history.pushState({ system }, '', path)
+    setActiveSystem(system)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  if (activeSystem === 'home') return <HomeScreen onSelect={navigateTo} />
+  if (activeSystem === 'cartazes') return <CartazesScreen onBack={() => navigateTo('home')} />
+
   return <main className="app-shell"><div className="brand-glow brand-glow-one" /><div className="brand-glow brand-glow-two" /><div className="app-container">
     <header className="brand-header">
       <div className="brand-topline"><div className="brand-logo-wrap"><img className="brand-logo" src="/drogaria-center-logo.png" alt="Drogaria Center" /></div><div className="local-chip"><span />Processamento local</div></div>
-      <div className="brand-content"><p className="brand-kicker">Conciliação financeira</p><h1>Vendas e recebimentos,<br />lado a lado.</h1><p className="sub">Cruze os relatórios Trier, PaggPix e Cielo com rapidez e encontre diferenças antes do fechamento.</p></div>
+      <div className="brand-content"><button className="back-button no-print" onClick={() => navigateTo('home')}>← Todos os sistemas</button><p className="brand-kicker">Conciliação financeira</p><h1>Vendas e recebimentos,<br />lado a lado.</h1><p className="sub">Cruze os relatórios Trier, PaggPix e Cielo com rapidez e encontre diferenças antes do fechamento.</p></div>
       <div className="hero-mark" aria-hidden="true">+</div>
     </header>
     <section className="section-heading no-print"><div><span className="section-kicker">Etapa 1</span><h2>Importe os relatórios</h2><p>Comece pela Relação de Vendas e adicione pelo menos uma fonte de recebimentos.</p></div><div className="privacy-note"><span>✓</span> Seus arquivos não saem deste dispositivo</div></section>
