@@ -6,10 +6,10 @@ import {
 
 const EMPTY_FILES = { trier: null, pagpix: null, cielo: null, fechamento: null }
 const SOURCES = {
-  trier: { title: 'Relação de Vendas (Trier)', hint: 'Base principal — obrigatório', color: 'bg-ink' },
-  pagpix: { title: 'Relatório Detalhado PaggPix', hint: 'Recebimentos PIX', color: 'bg-teal' },
-  cielo: { title: 'Relatório Detalhado Cielo', hint: 'Recebimentos cartão', color: 'bg-amber' },
-  fechamento: { title: 'Fechamento de Caixa', hint: 'Opcional', color: 'bg-muted' },
+  trier: { title: 'Relação de Vendas (Trier)', hint: 'Base principal — obrigatório', color: 'bg-ink', step: '01', badge: 'Obrigatório' },
+  pagpix: { title: 'Relatório Detalhado PaggPix', hint: 'Recebimentos PIX', color: 'bg-teal', step: '02', badge: 'PIX' },
+  cielo: { title: 'Relatório Detalhado Cielo', hint: 'Recebimentos cartão', color: 'bg-amber', step: '03', badge: 'Cartão' },
+  fechamento: { title: 'Fechamento de Caixa', hint: 'Opcional', color: 'bg-muted', step: '04', badge: 'Opcional' },
 }
 
 function FileSlot({ source, file, onFile }) {
@@ -22,17 +22,17 @@ function FileSlot({ source, file, onFile }) {
     : isTrier ? '.pdf,.xls,application/pdf,application/vnd.ms-excel' : '.pdf,application/pdf'
   const uploadLabel = isPagPix ? 'Enviar PDF ou XLSX' : isTrier ? 'Enviar PDF ou XLS' : 'Enviar PDF'
   return <article className="upload-card">
-    <div className={`h-1 ${source.color}`} />
-    <div className="p-5">
+    <div className={`upload-accent ${source.color}`} />
+    <div className="upload-card-body">
+      <div className="upload-meta"><span className="upload-step">{source.step}</span><span className={file ? 'upload-state loaded' : 'upload-state'}>{file ? 'Carregado' : source.badge}</span></div>
       <h2>{source.title}</h2>
       <p className="hint">{isPagPix ? `${source.hint} — PDF ou XLSX` : isTrier ? `${source.hint} — PDF ou XLS` : source.hint}</p>
       <input ref={input} className="hidden" type="file" accept={acceptedFiles} onChange={(event) => onFile(event.target.files?.[0])} />
-      {!file ? <button className="dropzone" onClick={() => input.current?.click()}>↑ {uploadLabel}</button> : <>
-        <div className="flex items-center justify-between gap-3 text-xs">
-          <b className="truncate">{file.fileName}</b><span className="text-muted whitespace-nowrap">{file.rows.length} linhas</span>
+      {!file ? <button className="dropzone" onClick={() => input.current?.click()}><span className="dropzone-icon">＋</span><span>{uploadLabel}</span><small>Toque para selecionar o arquivo</small></button> : <>
+        <div className="loaded-file">
+          <span className="loaded-file-icon">✓</span><b className="truncate">{file.fileName}</b><span className="text-muted whitespace-nowrap">{file.rows.length} linhas</span>
         </div>
-        <button className="swap-button" onClick={() => input.current?.click()}>Trocar arquivo</button>
-        <button className="review-button" onClick={() => setReviewOpen(!reviewOpen)}>{reviewOpen ? 'Ocultar linhas extraídas' : 'Ver linhas extraídas (revisar)'}</button>
+        <div className="file-actions"><button className="swap-button" onClick={() => input.current?.click()}>Trocar arquivo</button><button className="review-button" onClick={() => setReviewOpen(!reviewOpen)}>{reviewOpen ? 'Ocultar linhas' : 'Revisar extração'}</button></div>
         {reviewOpen && <div className="review-box">{file.lines.map((line, index) => <div key={`${line}-${index}`}>{line}</div>)}</div>}
       </>}
     </div>
@@ -190,15 +190,21 @@ export default function App() {
   const kpis = [['Total de vendas', counts.total], ['Vendas PIX', counts.pix], ['Vendas cartão', counts.card], ['Conciliadas', counts.reconciled], ['Não conciliadas', counts.missing], ['PIX sem venda', counts.pixNoSale], ['Cartão sem venda', counts.cardNoSale], ['Recebimentos duplicados', counts.duplicates], ['Valor conciliado', formatMoney(matchedValue)], ['Valor divergente', formatMoney(divergentValue)], ['% conciliação', `${totalValue ? ((matchedValue / totalValue) * 100).toFixed(1) : '0.0'}%`]]
   const tabs = [['resumo', 'Resumo'], ['conciliada', `Conciliadas (${counts.reconciled})`], ['divergencia', `Divergências (${counts.divergent})`], ['sem_recebimento', `Sem recebimento (${counts.missing})`], ['sem_venda', `Sem venda (${noSale.length})`], ...(counts.returns ? [['devolucao', `Devoluções (${counts.returns})`]] : [])]
 
-  return <main className="min-h-screen bg-paper py-8"><div className="mx-auto w-full max-w-6xl px-5 pb-16">
-    <header className="mb-7 flex items-center gap-3.5"><div className="badge">CT</div><div><h1>Concilia Trier — Drogaria Center</h1><p className="sub">Relação de Vendas Trier × Recebimentos PaggPix × Recebimentos Cielo</p></div></header>
-    <section className="no-print grid grid-cols-1 gap-3.5 md:grid-cols-2 xl:grid-cols-4">{Object.entries(SOURCES).map(([key, source]) => <FileSlot key={key} source={source} file={files[key]} onFile={(file) => handleFile(key, file)} />)}</section>
+  return <main className="app-shell"><div className="brand-glow brand-glow-one" /><div className="brand-glow brand-glow-two" /><div className="app-container">
+    <header className="brand-header">
+      <div className="brand-topline"><div className="brand-logo-wrap"><img className="brand-logo" src="/drogaria-center-logo.png" alt="Drogaria Center" /></div><div className="local-chip"><span />Processamento local</div></div>
+      <div className="brand-content"><p className="brand-kicker">Conciliação financeira</p><h1>Vendas e recebimentos,<br />lado a lado.</h1><p className="sub">Cruze os relatórios Trier, PaggPix e Cielo com rapidez e encontre diferenças antes do fechamento.</p></div>
+      <div className="hero-mark" aria-hidden="true">+</div>
+    </header>
+    <section className="section-heading no-print"><div><span className="section-kicker">Etapa 1</span><h2>Importe os relatórios</h2><p>Comece pela Relação de Vendas e adicione pelo menos uma fonte de recebimentos.</p></div><div className="privacy-note"><span>✓</span> Seus arquivos não saem deste dispositivo</div></section>
+    <section className="no-print upload-grid">{Object.entries(SOURCES).map(([key, source]) => <FileSlot key={key} source={source} file={files[key]} onFile={(file) => handleFile(key, file)} />)}</section>
     {error && <div role="alert" className="error-box">{error}</div>}
-    <section className="no-print controls"><label>Tolerância de valor (R$)<input type="number" min="0" step="0.1" value={toleranceValue} onChange={(event) => setToleranceValue(event.target.value)} /></label><label>Tolerância de horário (h)<input type="number" min="0" step="0.5" value={toleranceHours} onChange={(event) => setToleranceHours(event.target.value)} /></label><button className="primary-button" disabled={!canRun} onClick={runReconciliation}>Executar conciliação</button></section>
-    {output && <section><div className="kpi-grid">{kpis.map(([label, value]) => <div className="kpi" key={label}><div>{label}</div><strong>{value}</strong></div>)}</div>
+    <section className="no-print controls"><div className="controls-title"><span className="section-kicker">Etapa 2</span><strong>Defina as tolerâncias</strong></div><label>Tolerância de valor (R$)<input type="number" min="0" step="0.1" value={toleranceValue} onChange={(event) => setToleranceValue(event.target.value)} /></label><label>Tolerância de horário (h)<input type="number" min="0" step="0.5" value={toleranceHours} onChange={(event) => setToleranceHours(event.target.value)} /></label><button className="primary-button" disabled={!canRun} onClick={runReconciliation}><span>Executar conciliação</span><b aria-hidden="true">→</b></button></section>
+    {output && <section className="results-section"><div className="results-heading"><span className="section-kicker">Etapa 3</span><h2>Resultado da conciliação</h2><p>Revise os indicadores e filtre cada coluna para investigar os registros.</p></div><div className="kpi-grid">{kpis.map(([label, value]) => <div className="kpi" key={label}><div>{label}</div><strong>{value}</strong></div>)}</div>
       <div className="no-print tabs"><div className="tab-list">{tabs.map(([key, label]) => <button key={key} className={tab === key ? 'tab active' : 'tab'} onClick={() => setTab(key)}>{label}</button>)}</div><div className="export-list"><button onClick={() => downloadCsv(output)}>⇩ CSV</button><button onClick={() => downloadExcel(output)}>⇩ Excel</button><button onClick={() => window.print()}>⇩ PDF</button></div></div>
       {tab === 'resumo' && <div className="summary-card">Das <b>{counts.total}</b> vendas eletrônicas da Relação de Vendas, <b className="text-green">{counts.reconciled}</b> foram conciliadas, <b className="text-amber">{counts.divergent}</b> tiveram divergência de valor dentro da tolerância e <b className="text-rust">{counts.missing}</b> não encontraram recebimento correspondente.{noSale.length > 0 && <><br /><br />Também foram encontrados <b className="text-rust">{noSale.length}</b> recebimentos sem venda correspondente, sendo <b>{counts.duplicates}</b> identificados como possível duplicidade.</>}{counts.returns > 0 && <><br /><br /><b>{counts.returns}</b> linha(s) de devolução não entraram na conciliação, pois não representam recebimento a buscar.</>}<br /><br />Use as abas para revisar cada grupo ou exporte a tabela final em Excel, CSV ou PDF.</div>}
       {tab === 'conciliada' && <SalesTable rows={results.filter((row) => row.status === 'CONCILIADA')} />}{tab === 'divergencia' && <SalesTable rows={results.filter((row) => row.status === 'DIVERGENCIA')} />}{tab === 'sem_recebimento' && <SalesTable rows={results.filter((row) => row.status === 'SEM_RECEBIMENTO')} />}{tab === 'devolucao' && <SalesTable rows={results.filter((row) => row.status === 'DEVOLUCAO')} />}{tab === 'sem_venda' && <NoSaleTable rows={noSale} />}
     </section>}
+    <footer className="app-footer"><img src="/drogaria-center-logo.png" alt="Drogaria Center" /><span>Conciliação segura, simples e local.</span></footer>
   </div></main>
 }
