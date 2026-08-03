@@ -128,26 +128,176 @@ export function evaluatePriceOpportunity(currentPrice, lastCost) {
   return { type: 'high', label: 'Acima do último custo', difference: Math.abs(difference), percent }
 }
 
-export function calculateOrder(cotacoes, pedido, ajustesManuais = {}) {
+const PRODUCT_STOPWORDS = new Set([
+  'POT', 'POTASSICA', 'REV', 'REVESTIDO', 'REVESTIDOS', 'GENERICO', 'GEN', 'C', 'CX', 'BL', 'BLX', 'FR', 'FRASCO',
+  'BR', 'RGD', 'GD', 'CRG', 'EMS', 'GERMED', 'BIOLAB', 'RANBAXY', 'MEDLEY', 'PRATI', 'NEO', 'NEOQUIMICA',
+  'TEUTO', 'CIMED', 'ACHE', 'BIOSINTETICA', 'EUROFARMA', 'LEGRAND', 'MULTILAB', 'SANDOZ', 'SANOFI', 'COM',
+  'CP', 'CPR', 'COMP', 'COMPR', 'COMPRIMIDO', 'COMPRIMIDOS', 'CAP', 'CAPS', 'CAPSULA', 'CAPSULAS', 'UN', 'AMP', 'SACH',
+  'MG', 'MCG', 'G', 'ML', 'UI', 'MUI', 'DOSE', 'DOSES',
+])
+
+const FORM_ALIASES = [
+  ['tablet', /\b(CP|CPR|COM|COMP|COMPR|COMPRIMIDOS?|DRAGEAS?|DRG)\b/],
+  ['capsule', /\b(CAP|CAPS|CAPSULAS?)\b/],
+  ['drops', /\b(GTS|GOTAS?)\b/],
+  ['syrup', /\b(XPE|XAROPE)\b/],
+  ['suspension', /\b(SUSP|SUSPENSAO)\b/],
+  ['solution', /\b(SOL|SOLUCAO)\b/],
+  ['cream', /\b(CR|CREME)\b/],
+  ['ointment', /\b(POM|POMADA)\b/],
+  ['gel', /\bGEL\b/],
+  ['spray', /\b(SPR|SPRAY)\b/],
+  ['injectable', /\b(INJ|INJETAVEL|AMP|AMPOLA)\b/],
+  ['sachet', /\b(SACH|SACHE)\b/],
+]
+
+function uniqueSorted(values) {
+  return [...new Set(values.filter(Boolean))].sort()
+}
+
+function sameValues(first, second) {
+  return first.length === second.length && first.every((value, index) => value === second[index])
+}
+
+function diceScore(first, second) {
+  if (!first.length || !second.length) return 0
+  const secondSet = new Set(second)
+  const intersection = first.filter((token) => secondSet.has(token)).length
+  return (2 * intersection) / (first.length + second.length)
+}
+
+export function normalizeProductName(value) {
+  return normalizeHeader(value)
+    .replace(/(\d),(\d)/g, '$1.$2')
+    .replace(/\b(HIDROCLOROTIAZIDA|HCTZ|HCT)\b/g, ' HCTZ ')
+    .replace(/\bPOTASSICA\b|\bPOT\b/g, ' ')
+    .replace(/\bREVESTIDOS?\b|\bREV\b/g, ' ')
+    .replace(/([A-Z])(\d)/g, '$1 $2')
+    .replace(/(\d)([A-Z])/g, '$1 $2')
+    .replace(/[^A-Z0-9.%/+]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+export function buildProductSignature(name, supplier = '') {
+  let text = normalizeProductName(name)
+  text = text.replace(/(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\s*(MCG|MG|G|UI)\b/g, '$1$3 + $2$3')
+  const packPatterns = [
+    /\bC\s*\/\s*(\d+)\b/,
+    /\bBL(?:ISTER)?\s*X?\s*(\d+)\b/,
+    /\b(\d+)\s*(?:CP|CPR|COM|COMP|COMPR|COMPRIMIDOS?|CAP|CAPS|CAPSULAS?|DRG|SACH|AMP|UN)\b/,
+  ]
+  const packMatch = packPatterns.map((pattern) => text.match(pattern)).find(Boolean)
+  const pack = packMatch ? Number(packMatch[1]) : null
+  const form = FORM_ALIASES.find(([, pattern]) => pattern.test(text))?.[0] || null
+  const doseTokens = uniqueSorted([...text.matchAll(/(\d+(?:\.\d+)?)\s*(MCG|MG|G|UI|MUI|%)(?:\s*\/\s*(ML|G|DOSE))?/g)].map((match) => `${Number(match[1])}${match[2]}${match[3] ? `/${match[3]}` : ''}`))
+  const sizeTokens = uniqueSorted([...text.matchAll(/(\d+(?:\.\d+)?)\s*(ML|G)\b/g)].map((match) => `${Number(match[1])}${match[2]}`).filter((token) => !doseTokens.includes(token)))
+  const supplierTokens = new Set(normalizeProductName(supplier).split(' ').filter(Boolean))
+  const ingredientText = text
+    .replace(/\bC\s*\/\s*\d+\b/g, ' ')
+    .replace(/\bBL(?:ISTER)?\s*X?\s*\d+\b/g, ' ')
+    .replace(/\b\d+\s*(?:CP|CPR|COM|COMP|COMPR|COMPRIMIDOS?|CAP|CAPS|CAPSULAS?|DRG|SACH|AMP|UN)\b/g, ' ')
+    .replace(/\d+(?:\.\d+)?\s*(?:MCG|MG|G|UI|MUI|%)(?:\s*\/\s*(?:ML|G|DOSE))?/g, ' ')
+    .replace(/\d+(?:\.\d+)?\s*(?:ML|G)\b/g, ' ')
+    .replace(/[^A-Z0-9]+/g, ' ')
+  const ingredientTokens = uniqueSorted(ingredientText.split(/\s+/).filter((token) => token && !/^\d/.test(token) && !PRODUCT_STOPWORDS.has(token) && !supplierTokens.has(token)))
+  const associations = uniqueSorted(ingredientTokens.filter((token) => token === 'HCTZ'))
+  const presentation = pack !== null ? `PACK:${pack}` : sizeTokens.length ? `SIZE:${sizeTokens.join('+')}` : ''
+  const key = [ingredientTokens.join('+'), doseTokens.join('+'), form || '', presentation].join('|')
+  return { normalized: text, ingredientTokens, associations, doseTokens, sizeTokens, form, pack, presentation, key }
+}
+
+export function compareProductNames(orderName, candidateName, candidateSupplier = '') {
+  const order = buildProductSignature(orderName)
+  const candidate = buildProductSignature(candidateName, candidateSupplier)
+  const conflicts = []
+  if (order.doseTokens.length && candidate.doseTokens.length && !sameValues(order.doseTokens, candidate.doseTokens)) conflicts.push('dosagem')
+  if (order.form && candidate.form && order.form !== candidate.form) conflicts.push('forma')
+  if (order.pack !== null && candidate.pack !== null && order.pack !== candidate.pack) conflicts.push('embalagem')
+  if (order.sizeTokens.length && candidate.sizeTokens.length && !sameValues(order.sizeTokens, candidate.sizeTokens)) conflicts.push('volume')
+  if (!sameValues(order.associations, candidate.associations)) conflicts.push('associação')
+  const ingredientSimilarity = diceScore(order.ingredientTokens, candidate.ingredientTokens)
+  const doseMatch = order.doseTokens.length > 0 && candidate.doseTokens.length > 0 && sameValues(order.doseTokens, candidate.doseTokens)
+  const formMatch = Boolean(order.form && candidate.form && order.form === candidate.form)
+  const presentationMatch = Boolean(order.presentation && candidate.presentation && order.presentation === candidate.presentation)
+  const score = Math.round((ingredientSimilarity * .6 + (doseMatch ? .2 : 0) + (formMatch ? .1 : 0) + (presentationMatch ? .1 : 0)) * 100)
+  const automatic = !conflicts.length && ingredientSimilarity >= .85 && doseMatch && formMatch && presentationMatch
+  const suggestion = !conflicts.length && !automatic && ingredientSimilarity >= .55 && (doseMatch || formMatch || presentationMatch)
+  return {
+    status: conflicts.length ? 'conflict' : automatic ? 'automatic' : suggestion ? 'suggestion' : 'possible',
+    score,
+    conflicts,
+    order,
+    candidate,
+  }
+}
+
+export function productLinkId(item, candidateEan) {
+  const orderIdentity = normalizeEan(item.ean) || `NAME:${buildProductSignature(item.nome).key}`
+  return `${orderIdentity}=>${normalizeEan(candidateEan)}`
+}
+
+export function createOfferKey(supplier, sourceEan) {
+  return `${normalizeHeader(supplier)}|${normalizeEan(sourceEan)}`
+}
+
+export function findProductMatches(cotacoes, item, productLinks = {}) {
+  const matchedProducts = []
+  const suggestions = []
+  Object.values(cotacoes).forEach((candidate) => {
+    const exact = Boolean(item.ean && candidate.ean === item.ean)
+    const linkState = productLinks[productLinkId(item, candidate.ean)]
+    const comparison = exact ? null : compareProductNames(item.nome, candidate.nome, candidate.ofertas[0]?.fornecedor || '')
+    let method = null
+    if (exact) method = 'ean'
+    else if (linkState === 'approved') method = 'confirmed-name'
+    else if (linkState !== 'rejected' && comparison.status === 'automatic') method = 'automatic-name'
+    if (method) {
+      matchedProducts.push({ ...candidate, method, score: exact ? 100 : comparison?.score || 100, comparison })
+    } else if (linkState !== 'rejected' && comparison?.status === 'suggestion') {
+      suggestions.push({ ...candidate, method: 'suggestion', score: comparison.score, comparison })
+    }
+  })
+
+  const offersByKey = new Map()
+  matchedProducts.forEach((product) => product.ofertas.forEach((offer) => {
+    const enriched = { ...offer, offerKey: createOfferKey(offer.fornecedor, product.ean), eanOferta: product.ean, nomeOferta: product.nome, matchMethod: product.method, matchScore: product.score }
+    const existing = offersByKey.get(enriched.offerKey)
+    if (!existing || enriched.precoUnitario < existing.precoUnitario) offersByKey.set(enriched.offerKey, enriched)
+  }))
+  const offers = [...offersByKey.values()].sort((first, second) => first.precoUnitario - second.precoUnitario)
+  suggestions.sort((first, second) => second.score - first.score)
+  return { offers, matchedProducts, suggestions }
+}
+
+export function calculateOrder(cotacoes, pedido, ajustesManuais = {}, productLinks = {}) {
   return pedido.map((item) => {
-    const offers = cotacoes[item.ean]?.ofertas || []
+    const { offers, matchedProducts, suggestions } = findProductMatches(cotacoes, item, productLinks)
     const ajuste = ajustesManuais[item.id]
     const quantidadeOriginal = item.quantidadePedida
     const adjustedQuantity = Number(ajuste?.quantidade)
     const quantidadeFinal = ajuste && Number.isInteger(adjustedQuantity) && adjustedQuantity >= 0 ? adjustedQuantity : quantidadeOriginal
-    const base = { ...item, quantidadeOriginal, quantidadeFinal, ajusteManual: Boolean(ajuste), motivoAjuste: ajuste?.motivo || '' }
-    if (!offers.length) return { ...base, fornecedorSelecionado: null, fornecedorAutomatico: null, precoUnitario: null, precoAutomatico: null, precoTotal: null, precoTotalAutomatico: null, impactoAjuste: 0, status: 'naoEncontrado' }
-    const best = [...offers].sort((first, second) => first.precoUnitario - second.precoUnitario)[0]
-    const preferred = item.fornecedorPreferido && offers.find((offer) => normalizeHeader(offer.fornecedor) === normalizeHeader(item.fornecedorPreferido))
+    const melhorOfertaEanExato = offers.find((offer) => offer.matchMethod === 'ean') || null
+    const ofertasNomeMaisBaratas = melhorOfertaEanExato
+      ? offers.filter((offer) => offer.matchMethod !== 'ean' && offer.eanOferta !== item.ean && offer.precoUnitario < melhorOfertaEanExato.precoUnitario - 0.005)
+      : []
+    const melhorOfertaNome = ofertasNomeMaisBaratas[0] || null
+    const economiaNomeUnitario = melhorOfertaNome && melhorOfertaEanExato ? melhorOfertaEanExato.precoUnitario - melhorOfertaNome.precoUnitario : 0
+    const base = { ...item, quantidadeOriginal, quantidadeFinal, ajusteManual: Boolean(ajuste), motivoAjuste: ajuste?.motivo || '', ofertasDisponiveis: offers, produtosCorrespondentes: matchedProducts, sugestoesCorrespondencia: suggestions, melhorOfertaEanExato, melhorOfertaNome, ofertasNomeMaisBaratas, temOfertaNomeMaisBarata: ofertasNomeMaisBaratas.length > 0, economiaNomeUnitario, economiaNomeTotal: economiaNomeUnitario * quantidadeFinal }
+    if (!offers.length) return { ...base, fornecedorSelecionado: null, fornecedorAutomatico: null, eanOferta: null, nomeOferta: null, matchMethod: null, matchScore: null, precoUnitario: null, precoAutomatico: null, precoTotal: null, precoTotalAutomatico: null, impactoAjuste: 0, status: suggestions.length ? 'revisarCorrespondencia' : 'naoEncontrado' }
+    const best = offers[0]
+    const preferredOffers = item.fornecedorPreferido ? offers.filter((offer) => normalizeHeader(offer.fornecedor) === normalizeHeader(item.fornecedorPreferido)) : []
+    const preferred = preferredOffers[0]
     const automatic = item.fornecedorPreferido ? preferred : best
-    const manual = ajuste?.fornecedor && offers.find((offer) => normalizeHeader(offer.fornecedor) === normalizeHeader(ajuste.fornecedor))
-    if (ajuste && !manual) return { ...base, fornecedorSelecionado: ajuste.fornecedor, fornecedorAutomatico: automatic?.fornecedor || null, precoUnitario: null, precoAutomatico: automatic?.precoUnitario ?? null, precoTotal: null, precoTotalAutomatico: automatic ? automatic.precoUnitario * quantidadeOriginal : null, impactoAjuste: 0, status: 'ajusteInvalido' }
-    if (!automatic && !manual) return { ...base, fornecedorSelecionado: null, fornecedorAutomatico: null, precoUnitario: null, precoAutomatico: null, precoTotal: null, precoTotalAutomatico: null, impactoAjuste: 0, status: 'naoEncontrado' }
+    const supplierMatches = ajuste?.fornecedor ? offers.filter((offer) => normalizeHeader(offer.fornecedor) === normalizeHeader(ajuste.fornecedor)) : []
+    const manual = ajuste?.eanOferta ? supplierMatches.find((offer) => offer.eanOferta === ajuste.eanOferta) : supplierMatches[0]
+    if (ajuste && !manual) return { ...base, fornecedorSelecionado: ajuste.fornecedor, fornecedorAutomatico: automatic?.fornecedor || null, eanOferta: ajuste.eanOferta || null, nomeOferta: null, matchMethod: null, matchScore: null, precoUnitario: null, precoAutomatico: automatic?.precoUnitario ?? null, precoTotal: null, precoTotalAutomatico: automatic ? automatic.precoUnitario * quantidadeOriginal : null, impactoAjuste: 0, status: 'ajusteInvalido' }
+    if (!automatic && !manual) return { ...base, fornecedorSelecionado: null, fornecedorAutomatico: null, eanOferta: null, nomeOferta: null, matchMethod: null, matchScore: null, precoUnitario: null, precoAutomatico: null, precoTotal: null, precoTotalAutomatico: null, impactoAjuste: 0, status: suggestions.length ? 'revisarCorrespondencia' : 'naoEncontrado' }
     const selected = manual || automatic
     const precoTotal = selected.precoUnitario * quantidadeFinal
     const precoTotalAutomatico = automatic ? automatic.precoUnitario * quantidadeOriginal : null
-    const status = ajuste ? (quantidadeFinal === 0 ? 'removidoManual' : 'ajusteManual') : selected.fornecedor === best.fornecedor ? 'selecionado' : 'alternativaPreferida'
-    return { ...base, fornecedorSelecionado: selected.fornecedor, fornecedorAutomatico: automatic?.fornecedor || null, precoUnitario: selected.precoUnitario, precoAutomatico: automatic?.precoUnitario ?? null, menorPreco: best.precoUnitario, precoTotal, precoTotalAutomatico, impactoAjuste: ajuste && precoTotalAutomatico !== null ? precoTotal - precoTotalAutomatico : 0, status }
+    const status = ajuste ? (quantidadeFinal === 0 ? 'removidoManual' : 'ajusteManual') : selected.offerKey === best.offerKey ? 'selecionado' : 'alternativaPreferida'
+    return { ...base, fornecedorSelecionado: selected.fornecedor, fornecedorAutomatico: automatic?.fornecedor || null, eanOferta: selected.eanOferta, nomeOferta: selected.nomeOferta, eanOfertaAutomatico: automatic?.eanOferta || null, matchMethod: selected.matchMethod, matchScore: selected.matchScore, offerKey: selected.offerKey, precoUnitario: selected.precoUnitario, precoAutomatico: automatic?.precoUnitario ?? null, menorPreco: best.precoUnitario, precoTotal, precoTotalAutomatico, impactoAjuste: ajuste && precoTotalAutomatico !== null ? precoTotal - precoTotalAutomatico : 0, status }
   })
 }
 
