@@ -6,6 +6,7 @@ import {
 } from './reconciliation.js'
 
 const EMPTY_FILES = { trier: null, pagpix: null, cielo: null, fechamento: null }
+const ANALYST_MARKERS_STORAGE_KEY = 'drogaria-center:trier:analyst-markers:v1'
 const SYSTEM_PATHS = { home: '/', trier: '/conciliacao-trier', cartazes: '/cartazes-oferta', cotacao: '/cotacao-medicamentos' }
 const SOURCES = {
   trier: { title: 'Relação de Vendas (Trier)', hint: 'Base principal — obrigatório', color: 'bg-ink', step: '01', badge: 'Obrigatório' },
@@ -48,6 +49,31 @@ function FileSlot({ source, file, onFile }) {
 
 function StatusPill({ status }) { return <span className={`status status-${status}`}>{STATUS_LABEL[status]}</span> }
 
+function loadAnalystMarkers() {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(ANALYST_MARKERS_STORAGE_KEY) || '{}')
+    return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {}
+  } catch { return {} }
+}
+
+function markerSignature(kind, row) {
+  if (kind === 'sem_recebimento') {
+    return [row.sale.numero, row.sale.data, row.sale.hora, row.sale.forma, row.sale.valor, row.sale.operador, row.sale.raw].join('|')
+  }
+  return [row.fonte, row.data, row.hora, row.valor, row.operador, row.tipo, row.bandeira, row.raw].join('|')
+}
+
+function rowsWithMarkerKeys(rows, kind) {
+  if (!kind) return rows
+  const occurrences = new Map()
+  return rows.map((row) => {
+    const signature = markerSignature(kind, row)
+    const occurrence = occurrences.get(signature) || 0
+    occurrences.set(signature, occurrence + 1)
+    return { ...row, __markerKey: `${kind}:${signature}:${occurrence}` }
+  })
+}
+
 function columnFilter(rows, columns, filters) {
   return rows.filter((row) => columns.every((column) => {
     const filter = filters[column.key]?.trim().toLocaleLowerCase('pt-BR')
@@ -57,7 +83,7 @@ function columnFilter(rows, columns, filters) {
 
 function FilterRow({ columns, rows, filters, onChange, tableId }) {
   return <tr className="filter-row no-print">{columns.map((column) => <th key={column.key}>
-    <input
+    {column.filterable !== false && <><input
       aria-label={`Filtrar ${column.label}`}
       value={filters[column.key] ?? ''}
       list={`${tableId}-${column.key}-options`}
@@ -68,12 +94,85 @@ function FilterRow({ columns, rows, filters, onChange, tableId }) {
       {[...new Set(rows.map(column.value).filter((value) => value && value !== '—'))]
         .sort((a, b) => a.localeCompare(b, 'pt-BR', { numeric: true }))
         .map((value) => <option value={value} key={value} />)}
-    </datalist>
+    </datalist></>}
   </th>)}</tr>
 }
 
-function SalesTable({ rows }) {
+function useReorderableColumns(columns, storageKey) {
+  const [columnOrder, setColumnOrder] = useState(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(storageKey) || '[]')
+      return Array.isArray(saved) ? saved : []
+    } catch { return [] }
+  })
+  const columnMap = new Map(columns.map((column) => [column.key, column]))
+  const visibleKeys = [...columnOrder.filter((key) => columnMap.has(key)), ...columns.map((column) => column.key).filter((key) => !columnOrder.includes(key))]
+  const orderedColumns = visibleKeys.map((key) => columnMap.get(key))
+
+  useEffect(() => {
+    const missingKeys = columns.map((column) => column.key).filter((key) => !columnOrder.includes(key))
+    if (missingKeys.length) setColumnOrder((current) => [...current, ...missingKeys.filter((key) => !current.includes(key))])
+  }, [columns.map((column) => column.key).join('|')])
+
+  useEffect(() => { window.localStorage.setItem(storageKey, JSON.stringify(columnOrder)) }, [columnOrder, storageKey])
+
+  function moveColumn(sourceKey, targetKey) {
+    if (!sourceKey || sourceKey === targetKey) return
+    setColumnOrder((current) => {
+      const complete = [...current, ...columns.map((column) => column.key).filter((key) => !current.includes(key))]
+      const sourceIndex = complete.indexOf(sourceKey)
+      const targetIndex = complete.indexOf(targetKey)
+      if (sourceIndex < 0 || targetIndex < 0) return current
+      const next = [...complete]
+      const [moved] = next.splice(sourceIndex, 1)
+      next.splice(targetIndex, 0, moved)
+      return next
+    })
+  }
+
+  function shiftColumn(key, direction) {
+    const index = visibleKeys.indexOf(key)
+    const target = visibleKeys[index + direction]
+    if (target) moveColumn(key, target)
+  }
+
+  return { orderedColumns, moveColumn, shiftColumn }
+}
+
+function ReorderableColumnHeader({ column, index, total, onMove, onShift }) {
+  return <th className="reorderable-column" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); onMove(event.dataTransfer.getData('text/plain'), column.key) }}>
+    <div className="column-heading" draggable onDragStart={(event) => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', column.key) }} title="Arraste para mudar esta coluna de lugar">
+      <span className="column-drag-handle" aria-hidden="true">⠿</span><span>{column.label}</span>
+      <span className="column-move-buttons no-print"><button type="button" disabled={index === 0} onClick={(event) => { event.stopPropagation(); onShift(column.key, -1) }} aria-label={`Mover ${column.label} para a esquerda`}>←</button><button type="button" disabled={index === total - 1} onClick={(event) => { event.stopPropagation(); onShift(column.key, 1) }} aria-label={`Mover ${column.label} para a direita`}>→</button></span>
+    </div>
+  </th>
+}
+
+function ReviewToolbar({ rows, markers, reviewFilter, onReviewFilter, onSetAll }) {
+  const marked = rows.filter((row) => markers[row.__markerKey]).length
+  return <div className="analyst-review-toolbar no-print">
+    <div className="analyst-review-copy"><span className="analyst-review-icon">✓</span><div><strong>Revisão do analista</strong><small>{marked} de {rows.length} registro(s) marcados como conciliados manualmente. A marcação não altera o resultado automático.</small></div></div>
+    <div className="analyst-review-controls">
+      <div className="analyst-review-bulk" role="group" aria-label="Marcar registros em lote">
+        <button type="button" disabled={marked === rows.length} onClick={() => onSetAll(rows.map((row) => row.__markerKey), true)}>✓ Marcar todos</button>
+        <button type="button" disabled={marked === 0} onClick={() => onSetAll(rows.map((row) => row.__markerKey), false)}>○ Desmarcar todos</button>
+      </div>
+      <div className="analyst-review-filters" role="group" aria-label="Filtrar revisão manual">
+        {[['all', 'Todos'], ['pending', 'Pendentes'], ['marked', 'Marcados']].map(([key, label]) => <button type="button" key={key} className={reviewFilter === key ? 'active' : ''} onClick={() => onReviewFilter(key)}>{label}</button>)}
+      </div>
+    </div>
+  </div>
+}
+
+function AnalystMarker({ marker, onToggle }) {
+  return <button type="button" className={marker ? 'analyst-marker marked' : 'analyst-marker'} onClick={onToggle} aria-pressed={Boolean(marker)} title={marker ? 'Clique para reabrir este registro' : 'Marcar que o motivo já foi identificado'}>
+    <span>{marker ? '✓' : '○'}</span>{marker ? 'Conciliado pelo analista' : 'Marcar conciliado'}
+  </button>
+}
+
+function SalesTable({ rows, markers = {}, onToggleMarker, onSetMarkers, markerKind }) {
   const [filters, setFilters] = useState({})
+  const [reviewFilter, setReviewFilter] = useState('all')
   const columns = [
     { key: 'sale', label: 'Nº venda', value: (row) => row.sale.numero },
     { key: 'date', label: 'Data', value: (row) => row.sale.data },
@@ -86,18 +185,23 @@ function SalesTable({ rows }) {
     { key: 'source', label: 'Origem', value: (row) => row.fonte || '—' },
     { key: 'receivedTime', label: 'Hora receb.', value: (row) => row.recebimento?.hora || '—' },
     { key: 'difference', label: 'Diferença', value: (row) => row.diff !== undefined ? formatMoney(row.diff) : '—' },
-    { key: 'status', label: 'Status', value: (row) => STATUS_LABEL[row.status] },
+    { key: 'status', label: 'Status', value: (row) => STATUS_LABEL[row.status], render: (row) => <StatusPill status={row.status} /> },
+    ...(markerKind ? [{ key: 'analysis', label: 'Análise', filterable: false, value: () => '', render: (row) => <AnalystMarker marker={markers[row.__markerKey]} onToggle={() => onToggleMarker(row.__markerKey)} /> }] : []),
   ]
-  const filteredRows = columnFilter(rows, columns, filters)
+  const { orderedColumns, moveColumn, shiftColumn } = useReorderableColumns(columns, 'drogaria-center:trier:sales-column-order:v1')
+  const keyedRows = rowsWithMarkerKeys(rows, markerKind)
+  const columnFilteredRows = columnFilter(keyedRows, columns, filters)
+  const filteredRows = markerKind ? columnFilteredRows.filter((row) => reviewFilter === 'all' || (reviewFilter === 'marked') === Boolean(markers[row.__markerKey])) : columnFilteredRows
   if (!rows.length) return <EmptyTable />
-  return <><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} registro(s).</div><Table><thead><tr>{columns.map((column) => <th key={column.key}>{column.label}</th>)}</tr><FilterRow tableId="sales-filter" columns={columns} rows={rows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
-    {filteredRows.map((row) => { const sale = row.sale; return <tr key={`${sale.numero}-${row.status}`}><td>{sale.numero}</td><td>{sale.data}</td><td>{sale.hora || '—'}</td><td>{operatorName(sale.operador)}</td><td>{sale.forma || '—'}</td><td>{sale.tele === 'Sim' ? 'Delivery' : 'Balcão'}</td><td>{formatMoney(sale.valor)}</td><td>{row.recebimento ? formatMoney(row.recebimento.valor) : '—'}</td><td>{row.fonte || '—'}</td><td>{row.recebimento?.hora || '—'}</td><td>{row.diff !== undefined ? formatMoney(row.diff) : '—'}</td><td><StatusPill status={row.status} /></td></tr> })}
-    {!filteredRows.length && <tr className="empty-row"><td colSpan={columns.length}>Nenhum registro corresponde aos filtros.</td></tr>}
+  return <>{markerKind && <ReviewToolbar rows={keyedRows} markers={markers} reviewFilter={reviewFilter} onReviewFilter={setReviewFilter} onSetAll={onSetMarkers} />}<div className="table-meta"><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} registro(s).</div><div className="column-order-hint no-print">⠿ Arraste uma coluna ou use as setas para reorganizar</div></div><Table><thead><tr>{orderedColumns.map((column, index) => <ReorderableColumnHeader key={column.key} column={column} index={index} total={orderedColumns.length} onMove={moveColumn} onShift={shiftColumn} />)}</tr><FilterRow tableId="sales-filter" columns={orderedColumns} rows={keyedRows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
+    {filteredRows.map((row) => { const sale = row.sale; const marker = markers[row.__markerKey]; return <tr className={marker ? 'manually-reconciled' : ''} key={row.__markerKey || `${sale.numero}-${row.status}`}>{orderedColumns.map((column) => <td key={column.key}>{column.render ? column.render(row) : column.value(row)}</td>)}</tr> })}
+    {!filteredRows.length && <tr className="empty-row"><td colSpan={orderedColumns.length}>Nenhum registro corresponde aos filtros.</td></tr>}
   </tbody></Table></>
 }
 
-function NoSaleTable({ rows }) {
+function NoSaleTable({ rows, markers = {}, onToggleMarker, onSetMarkers, markerKind }) {
   const [filters, setFilters] = useState({})
+  const [reviewFilter, setReviewFilter] = useState('all')
   const columns = [
     { key: 'source', label: 'Origem', value: (row) => row.fonte },
     { key: 'date', label: 'Data', value: (row) => row.data },
@@ -105,39 +209,45 @@ function NoSaleTable({ rows }) {
     { key: 'operator', label: 'Operador', value: (row) => operatorName(row.operador) },
     { key: 'type', label: 'Tipo/Bandeira', value: (row) => row.tipo || row.bandeira || '—' },
     { key: 'value', label: 'Valor', value: (row) => formatMoney(row.valor) },
-    { key: 'status', label: 'Status', value: (row) => STATUS_LABEL[row.status] },
+    { key: 'status', label: 'Status', value: (row) => STATUS_LABEL[row.status], render: (row) => <StatusPill status={row.status} /> },
+    { key: 'analysis', label: 'Análise', filterable: false, value: () => '', render: (row) => <AnalystMarker marker={markers[row.__markerKey]} onToggle={() => onToggleMarker(row.__markerKey)} /> },
   ]
-  const filteredRows = columnFilter(rows, columns, filters)
+  const { orderedColumns, moveColumn, shiftColumn } = useReorderableColumns(columns, 'drogaria-center:trier:no-sale-column-order:v1')
+  const keyedRows = rowsWithMarkerKeys(rows, markerKind)
+  const columnFilteredRows = columnFilter(keyedRows, columns, filters)
+  const filteredRows = columnFilteredRows.filter((row) => reviewFilter === 'all' || (reviewFilter === 'marked') === Boolean(markers[row.__markerKey]))
   if (!rows.length) return <EmptyTable />
-  return <><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} registro(s).</div><Table><thead><tr>{columns.map((column) => <th key={column.key}>{column.label}</th>)}</tr><FilterRow tableId="no-sale-filter" columns={columns} rows={rows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
-    {filteredRows.map((row, index) => <tr key={`${row.fonte}-${row.data}-${row.hora}-${index}`}><td>{row.fonte}</td><td>{row.data}</td><td>{row.hora || '—'}</td><td>{operatorName(row.operador)}</td><td>{row.tipo || row.bandeira || '—'}</td><td>{formatMoney(row.valor)}</td><td><StatusPill status={row.status} /></td></tr>)}
-    {!filteredRows.length && <tr className="empty-row"><td colSpan={columns.length}>Nenhum registro corresponde aos filtros.</td></tr>}
+  return <><ReviewToolbar rows={keyedRows} markers={markers} reviewFilter={reviewFilter} onReviewFilter={setReviewFilter} onSetAll={onSetMarkers} /><div className="table-meta"><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} registro(s).</div><div className="column-order-hint no-print">⠿ Arraste uma coluna ou use as setas para reorganizar</div></div><Table><thead><tr>{orderedColumns.map((column, index) => <ReorderableColumnHeader key={column.key} column={column} index={index} total={orderedColumns.length} onMove={moveColumn} onShift={shiftColumn} />)}</tr><FilterRow tableId="no-sale-filter" columns={orderedColumns} rows={keyedRows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
+    {filteredRows.map((row) => { const marker = markers[row.__markerKey]; return <tr className={marker ? 'manually-reconciled' : ''} key={row.__markerKey}>{orderedColumns.map((column) => <td key={column.key}>{column.render ? column.render(row) : column.value(row)}</td>)}</tr> })}
+    {!filteredRows.length && <tr className="empty-row"><td colSpan={orderedColumns.length}>Nenhum registro corresponde aos filtros.</td></tr>}
   </tbody></Table></>
 }
 
 function Table({ children }) { return <div className="table-frame"><div className="table-scroll"><table>{children}</table></div></div> }
 function EmptyTable() { return <div className="table-frame p-7 text-center text-sm text-muted">Nada nessa categoria.</div> }
 
-function exportRows(output) {
+function exportRows(output, markers = {}) {
+  const sales = rowsWithMarkerKeys(output.results, 'sem_recebimento')
+  const receipts = rowsWithMarkerKeys(output.semVenda, 'sem_venda')
   return [
-    ...output.results.map((row) => ({
-      'Número da venda': row.sale.numero, Data: row.sale.data, 'Hora da venda': row.sale.hora || '', Operador: operatorName(row.sale.operador), 'Forma de pagamento': row.sale.forma || '', 'Delivery/Balcão': row.sale.tele === 'Sim' ? 'Delivery' : 'Balcão', 'Valor da venda': row.sale.valor, 'Valor recebido': row.recebimento?.valor ?? '', Origem: row.fonte || '', 'Hora do recebimento': row.recebimento?.hora || '', 'Diferença de valor': row.diff ?? '', Status: STATUS_LABEL[row.status],
+    ...sales.map((row) => ({
+      'Número da venda': row.sale.numero, Data: row.sale.data, 'Hora da venda': row.sale.hora || '', Operador: operatorName(row.sale.operador), 'Forma de pagamento': row.sale.forma || '', 'Delivery/Balcão': row.sale.tele === 'Sim' ? 'Delivery' : 'Balcão', 'Valor da venda': row.sale.valor, 'Valor recebido': row.recebimento?.valor ?? '', Origem: row.fonte || '', 'Hora do recebimento': row.recebimento?.hora || '', 'Diferença de valor': row.diff ?? '', Status: STATUS_LABEL[row.status], 'Revisão do analista': row.status === 'SEM_RECEBIMENTO' ? (markers[row.__markerKey] ? 'Conciliado pelo analista' : 'Pendente') : '', 'Data da revisão': markers[row.__markerKey]?.markedAt ? new Date(markers[row.__markerKey].markedAt).toLocaleString('pt-BR') : '',
     })),
-    ...output.semVenda.map((row) => ({
-      'Número da venda': '', Data: row.data, 'Hora da venda': '', Operador: operatorName(row.operador), 'Forma de pagamento': '', 'Delivery/Balcão': row.tipo || row.bandeira || '', 'Valor da venda': '', 'Valor recebido': row.valor, Origem: row.fonte, 'Hora do recebimento': row.hora || '', 'Diferença de valor': '', Status: STATUS_LABEL[row.status],
+    ...receipts.map((row) => ({
+      'Número da venda': '', Data: row.data, 'Hora da venda': '', Operador: operatorName(row.operador), 'Forma de pagamento': '', 'Delivery/Balcão': row.tipo || row.bandeira || '', 'Valor da venda': '', 'Valor recebido': row.valor, Origem: row.fonte, 'Hora do recebimento': row.hora || '', 'Diferença de valor': '', Status: STATUS_LABEL[row.status], 'Revisão do analista': markers[row.__markerKey] ? 'Conciliado pelo analista' : 'Pendente', 'Data da revisão': markers[row.__markerKey]?.markedAt ? new Date(markers[row.__markerKey].markedAt).toLocaleString('pt-BR') : '',
     })),
   ]
 }
 
-function downloadCsv(output) {
-  const rows = exportRows(output); if (!rows.length) return
+function downloadCsv(output, markers) {
+  const rows = exportRows(output, markers); if (!rows.length) return
   const headers = Object.keys(rows[0]); const content = [headers.join(';'), ...rows.map((row) => headers.map((key) => String(row[key]).replace(/;/g, ',')).join(';'))].join('\n')
   const url = URL.createObjectURL(new Blob(['\uFEFF', content], { type: 'text/csv;charset=utf-8' }))
   const link = Object.assign(document.createElement('a'), { href: url, download: 'concilia_trier.csv' }); link.click(); URL.revokeObjectURL(url)
 }
 
-async function downloadExcel(output) {
-  const rows = exportRows(output); if (!rows.length) return
+async function downloadExcel(output, markers) {
+  const rows = exportRows(output, markers); if (!rows.length) return
   const { default: ExcelJS } = await import('exceljs')
   const headers = Object.keys(rows[0])
   const workbook = new ExcelJS.Workbook()
@@ -503,7 +613,34 @@ export default function App() {
   const [output, setOutput] = useState(null)
   const [tab, setTab] = useState('resumo')
   const [error, setError] = useState('')
+  const [analystMarkers, setAnalystMarkers] = useState(loadAnalystMarkers)
   const canRun = files.trier && (files.pagpix || files.cielo)
+
+  useEffect(() => {
+    window.localStorage.setItem(ANALYST_MARKERS_STORAGE_KEY, JSON.stringify(analystMarkers))
+  }, [analystMarkers])
+
+  function toggleAnalystMarker(markerKey) {
+    setAnalystMarkers((current) => {
+      if (current[markerKey]) {
+        const next = { ...current }
+        delete next[markerKey]
+        return next
+      }
+      return { ...current, [markerKey]: { markedAt: new Date().toISOString() } }
+    })
+  }
+
+  function setAnalystMarkerGroup(markerKeys, shouldMark) {
+    setAnalystMarkers((current) => {
+      const next = { ...current }
+      if (shouldMark) {
+        const markedAt = new Date().toISOString()
+        markerKeys.forEach((markerKey) => { next[markerKey] = next[markerKey] || { markedAt } })
+      } else markerKeys.forEach((markerKey) => { delete next[markerKey] })
+      return next
+    })
+  }
 
   async function handleFile(key, file) {
     if (!file) return
@@ -568,9 +705,9 @@ export default function App() {
     {error && <div role="alert" className="error-box">{error}</div>}
     <section className="no-print controls"><div className="controls-title"><span className="section-kicker">Etapa 2</span><strong>Defina as tolerâncias</strong></div><label>Tolerância de valor (R$)<input type="number" min="0" step="0.1" value={toleranceValue} onChange={(event) => setToleranceValue(event.target.value)} /></label><label>Tolerância de horário (h)<input type="number" min="0" step="0.5" value={toleranceHours} onChange={(event) => setToleranceHours(event.target.value)} /></label><button className="primary-button" disabled={!canRun} onClick={runReconciliation}><span>Executar conciliação</span><b aria-hidden="true">→</b></button></section>
     {output && <section className="results-section"><div className="results-heading"><span className="section-kicker">Etapa 3</span><h2>Resultado da conciliação</h2><p>Revise os indicadores e filtre cada coluna para investigar os registros.</p></div><div className="kpi-grid">{kpis.map(([label, value]) => <div className="kpi" key={label}><div>{label}</div><strong>{value}</strong></div>)}</div>
-      <div className="no-print tabs"><div className="tab-list">{tabs.map(([key, label]) => <button key={key} className={tab === key ? 'tab active' : 'tab'} onClick={() => setTab(key)}>{label}</button>)}</div><div className="export-list"><button onClick={() => downloadCsv(output)}>⇩ CSV</button><button onClick={() => downloadExcel(output)}>⇩ Excel</button><button onClick={() => window.print()}>⇩ PDF</button></div></div>
+      <div className="no-print tabs"><div className="tab-list">{tabs.map(([key, label]) => <button key={key} className={tab === key ? 'tab active' : 'tab'} onClick={() => setTab(key)}>{label}</button>)}</div><div className="export-list"><button onClick={() => downloadCsv(output, analystMarkers)}>⇩ CSV</button><button onClick={() => downloadExcel(output, analystMarkers)}>⇩ Excel</button><button onClick={() => window.print()}>⇩ PDF</button></div></div>
       {tab === 'resumo' && <div className="summary-card">Das <b>{counts.total}</b> vendas eletrônicas da Relação de Vendas, <b className="text-green">{counts.reconciled}</b> foram conciliadas, <b className="text-amber">{counts.divergent}</b> tiveram divergência de valor dentro da tolerância e <b className="text-rust">{counts.missing}</b> não encontraram recebimento correspondente.{noSale.length > 0 && <><br /><br />Também foram encontrados <b className="text-rust">{noSale.length}</b> recebimentos sem venda correspondente, sendo <b>{counts.duplicates}</b> identificados como possível duplicidade.</>}{counts.returns > 0 && <><br /><br /><b>{counts.returns}</b> linha(s) de devolução não entraram na conciliação, pois não representam recebimento a buscar.</>}<br /><br />Use as abas para revisar cada grupo ou exporte a tabela final em Excel, CSV ou PDF.</div>}
-      {tab === 'conciliada' && <SalesTable rows={results.filter((row) => row.status === 'CONCILIADA')} />}{tab === 'divergencia' && <SalesTable rows={results.filter((row) => row.status === 'DIVERGENCIA')} />}{tab === 'sem_recebimento' && <SalesTable rows={results.filter((row) => row.status === 'SEM_RECEBIMENTO')} />}{tab === 'devolucao' && <SalesTable rows={results.filter((row) => row.status === 'DEVOLUCAO')} />}{tab === 'sem_venda' && <NoSaleTable rows={noSale} />}
+      {tab === 'conciliada' && <SalesTable rows={results.filter((row) => row.status === 'CONCILIADA')} />}{tab === 'divergencia' && <SalesTable rows={results.filter((row) => row.status === 'DIVERGENCIA')} />}{tab === 'sem_recebimento' && <SalesTable rows={results.filter((row) => row.status === 'SEM_RECEBIMENTO')} markers={analystMarkers} onToggleMarker={toggleAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_recebimento" />}{tab === 'devolucao' && <SalesTable rows={results.filter((row) => row.status === 'DEVOLUCAO')} />}{tab === 'sem_venda' && <NoSaleTable rows={noSale} markers={analystMarkers} onToggleMarker={toggleAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_venda" />}
     </section>}
     <footer className="app-footer"><img src="/drogaria-center-logo.png" alt="Drogaria Center" /><span>Conciliação segura, simples e local.</span></footer>
   </div></main>
