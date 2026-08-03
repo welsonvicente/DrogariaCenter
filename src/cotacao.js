@@ -38,11 +38,12 @@ export function detectHeaderRow(matrix) {
 }
 
 const columnPatterns = {
-  ean: ['EAN', 'GTIN', 'CODIGO BARRAS', 'COD BARRAS', 'CODIGO DE BARRAS', 'EAN PRINCIPAL'],
+  ean: ['EAN', 'GTIN', 'CODIGO BARRAS', 'COD BARRAS', 'COD. BARRAS', 'CODIGO DE BARRAS', 'EAN PRINCIPAL'],
   codigo: ['CODIGO', 'COD', 'COD REDUZIDO', 'REFERENCIA', 'REF', 'ITEM', 'COD FAT'],
   nome: ['NOME', 'DESCRICAO', 'PRODUTO', 'MEDICAMENTO', 'NOME DO PRODUTO', 'DESC'],
   quantidade: ['QUANTIDADE', 'QTD', 'QTDE', 'QTD PEDIDA', 'QUANT'],
   precoUnit: ['PRECO UNITARIO', 'PRECO UNIT', 'VALOR UNITARIO', 'PRECO C DESCONTO SEM ST', 'PRECO COM DESCONTO', 'PRECO', 'VALOR', 'PU'],
+  precoCusto: ['P. CUSTO', 'P CUSTO', 'PRECO DE CUSTO', 'PRECO CUSTO', 'CUSTO UNITARIO', 'VALOR ULT ENTRADA', 'ULTIMO CUSTO'],
   fornecedor: ['FORNECEDOR', 'FABRICANTE', 'LABORATORIO', 'LAB', 'MARCA', 'FORNECEDOR PREFERIDO'],
 }
 
@@ -91,6 +92,40 @@ export function createOrderLineId() {
 
 export function ensureOrderLineIds(pedido) {
   return pedido.map((item) => item.id ? item : { ...item, id: createOrderLineId() })
+}
+
+export function normalizeEan(value) {
+  return String(value ?? '').replace(/\D/g, '')
+}
+
+export function parsePriceHistory(rows, { eanIndex, nameIndex = null, costIndex, laboratoryIndex = null }) {
+  const history = {}
+  let invalid = 0
+  let duplicates = 0
+
+  rows.forEach((row) => {
+    const ean = normalizeEan(row[eanIndex])
+    const lastCost = toNumber(row[costIndex])
+    if (!ean || lastCost === null || lastCost < 0) { invalid += 1; return }
+    if (history[ean]) duplicates += 1
+    history[ean] = {
+      ean,
+      nome: nameIndex === null ? '' : String(row[nameIndex] || '').trim(),
+      laboratorio: laboratoryIndex === null ? '' : String(row[laboratoryIndex] || '').trim(),
+      precoCusto: lastCost,
+    }
+  })
+
+  return { history, invalid, duplicates }
+}
+
+export function evaluatePriceOpportunity(currentPrice, lastCost) {
+  if (!Number.isFinite(currentPrice) || !Number.isFinite(lastCost)) return null
+  const difference = lastCost - currentPrice
+  const percent = lastCost > 0 ? Math.abs(difference) / lastCost * 100 : null
+  if (Math.abs(difference) < .005) return { type: 'stable', label: 'Mesmo preço', difference: 0, percent: 0 }
+  if (difference > 0) return { type: 'good', label: 'Boa oportunidade', difference, percent }
+  return { type: 'high', label: 'Acima do último custo', difference: Math.abs(difference), percent }
 }
 
 export function calculateOrder(cotacoes, pedido, ajustesManuais = {}) {
