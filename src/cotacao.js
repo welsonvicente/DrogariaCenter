@@ -4,6 +4,45 @@ export function normalizeHeader(value) {
   return String(value || '').trim().toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ')
 }
 
+function wordDistance(first, second) {
+  const previous = Array.from({ length: second.length + 1 }, (_, index) => index)
+  for (let firstIndex = 1; firstIndex <= first.length; firstIndex += 1) {
+    const current = [firstIndex]
+    for (let secondIndex = 1; secondIndex <= second.length; secondIndex += 1) {
+      current[secondIndex] = Math.min(
+        current[secondIndex - 1] + 1,
+        previous[secondIndex] + 1,
+        previous[secondIndex - 1] + (first[firstIndex - 1] === second[secondIndex - 1] ? 0 : 1),
+      )
+    }
+    previous.splice(0, previous.length, ...current)
+  }
+  return previous[second.length]
+}
+
+function similarSearchWord(term, word) {
+  if (term.length < 4 || word.length < 4) return false
+  if (word.startsWith(term) || term.startsWith(word)) return true
+  const smallestLength = Math.min(term.length, word.length)
+  const tolerance = smallestLength >= 8 ? 2 : smallestLength >= 5 ? 1 : 0
+  return tolerance > 0 && Math.abs(term.length - word.length) <= tolerance && wordDistance(term, word) <= tolerance
+}
+
+export function matchesProductSearch(product, query) {
+  const normalizedQuery = normalizeHeader(query)
+  if (!normalizedQuery) return true
+  const normalizedName = normalizeHeader(product?.nome)
+  const normalizedSupplier = normalizeHeader(product?.fornecedor)
+  const normalizedEan = String(product?.ean || '').replace(/\D/g, '')
+  const haystack = `${normalizedName} ${normalizedSupplier} ${normalizedEan}`
+  const words = normalizedName.split(/[^A-Z0-9]+/).filter(Boolean)
+  return normalizedQuery.split(/\s+/).every((term) => {
+    if (haystack.includes(term)) return true
+    if (/^\d+$/.test(term)) return normalizedEan.includes(term)
+    return words.some((word) => similarSearchWord(term, word))
+  })
+}
+
 export function toNumber(value) {
   if (value === undefined || value === null || value === '') return null
   if (typeof value === 'number') return value

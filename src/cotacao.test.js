@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { calculateOrder, compareProductNames, productLinkId } from './cotacao.js'
+import { calculateOrder, compareProductNames, matchesProductSearch, productLinkId } from './cotacao.js'
 
 const orderItem = { id: 'pedido-1', ean: '7890000000001', nome: 'LOSARTANA POT 50MG 30CP REV', quantidadePedida: 10, fornecedorPreferido: null }
 
@@ -14,6 +14,29 @@ const quotations = {
 test('normaliza variações seguras da mesma apresentação', () => {
   assert.equal(compareProductNames(orderItem.nome, quotations['7896004706795'].nome, 'EMS').status, 'automatic')
   assert.equal(compareProductNames(orderItem.nome, quotations['7896004708539'].nome, 'Germed').status, 'automatic')
+})
+
+test('busca unificada encontra nome, parte semelhante, fornecedor e EAN', () => {
+  const product = { nome: 'LOSARTANA POTASSICA 50MG C/30 CP EMS', ean: '7896004706795', fornecedor: 'EMS' }
+  assert.equal(matchesProductSearch(product, 'losartana'), true)
+  assert.equal(matchesProductSearch(product, 'lsoartana'), true)
+  assert.equal(matchesProductSearch(product, 'losart 50mg'), true)
+  assert.equal(matchesProductSearch(product, 'EMS'), true)
+  assert.equal(matchesProductSearch(product, '06795'), true)
+  assert.equal(matchesProductSearch(product, 'rivaroxabana'), false)
+})
+
+test('busca por losartana não retorna medicamentos sem relação', () => {
+  const unrelated = [
+    'C.VENLAFAXINA(C1)150MG 2BL15CAP L P-GD',
+    'C.VENLAFAXINA(C1)37,5MG 3X10CAP L PRO-GD',
+    'TANSULOSINA 0,4MG 30CAP',
+    'DULOXETINA 30MG 30CAP',
+  ]
+  unrelated.forEach((nome) => {
+    assert.equal(matchesProductSearch({ nome, ean: '', fornecedor: 'Germed' }, 'losartana'), false, nome)
+    assert.equal(matchesProductSearch({ nome, ean: '', fornecedor: 'Germed' }, 'lsoartana'), false, nome)
+  })
 })
 
 test('rejeita associação, dosagem e embalagem incompatíveis', () => {

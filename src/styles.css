@@ -209,6 +209,8 @@
 .quote-tabs::-webkit-scrollbar { display: none; }
 .quote-tabs button { display: inline-flex; min-height: 40px; flex: none; align-items: center; gap: 7px; border: 1px solid #ead9dc; border-radius: 999px; background: white; padding: 8px 11px; color: #705b60; font-size: 11px; font-weight: 800; white-space: nowrap; }
 .quote-tabs button.active { border-color: var(--brand-red); background: var(--brand-red); color: white; box-shadow: 0 7px 15px rgba(236, 0, 22, .18); }
+.quote-tabs button.all-suppliers { border-color: #cadf97; background: #f9ffed; color: #5c780d; }
+.quote-tabs button.all-suppliers.active { border-color: #628800; background: #628800; color: white; box-shadow: 0 7px 15px rgba(98, 136, 0, .2); }
 .quote-tabs span { border-radius: 999px; background: rgba(92, 68, 74, .10); padding: 2px 6px; font-size: 9px; }
 .quote-tabs .active span { background: rgba(255,255,255,.2); }
 .quote-content { margin-top: 4px; }
@@ -232,6 +234,13 @@
 .quote-kpis small { display: block; margin-bottom: 7px; color: #836d72; font-size: 9px; font-weight: 850; letter-spacing: .05em; text-transform: uppercase; }
 .quote-kpis b { color: var(--ink); font-size: 18px; letter-spacing: -.03em; }
 .quote-kpis b.success { color: #5d8d00; }.quote-kpis b.danger { color: #bd0018; }
+.quote-all-suppliers-intro { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; border: 1px solid #d5e7aa; border-radius: 15px; background: linear-gradient(135deg, #f9ffed, #fff); padding: 12px; }
+.quote-all-suppliers-intro > div { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.quote-all-suppliers-intro .section-kicker { color: #5c7e08; }
+.quote-all-suppliers-intro b { color: #4b6410; font-size: 12px; }
+.quote-all-suppliers-intro small { color: #87757a; font-size: 9px; line-height: 1.45; }
+.quote-all-suppliers-intro > span { align-self: flex-start; border-radius: 999px; background: #eaf6cf; padding: 6px 9px; color: #587700; font-size: 9px; font-weight: 850; white-space: nowrap; }
+.quote-supplier-name { display: inline-block; border-radius: 999px; background: #f1f8e1; padding: 5px 8px; color: #587500; font-size: 9px; }
 .quote-history-panel { display: flex; flex-direction: column; gap: 11px; margin: 0 0 12px; border: 1px solid #d7e7b2; border-radius: 15px; background: linear-gradient(135deg, #fafff1, #fff); padding: 12px; }
 .quote-history-panel > div:first-child { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
 .quote-history-panel .section-kicker { color: #5c7e08; }
@@ -446,6 +455,8 @@
   .app-container { padding: 24px 24px 64px; }
   .quote-ean-opportunity { flex-direction: row; align-items: center; }
   .quote-ean-opportunity > button { width: auto; }
+  .quote-all-suppliers-intro { flex-direction: row; align-items: center; justify-content: space-between; }
+  .quote-all-suppliers-intro > span { align-self: auto; }
   .home-topbar { padding-bottom: 28px; }
   .home-topbar .brand-logo-wrap { max-width: 205px; }
   .home-hero { padding: 38px 6px 32px; }
@@ -493,6 +504,7 @@
   .home-shell .system-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .quote-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .quote-purchase-kpis, .quote-order-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .quote-all-suppliers-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .poster-studio { grid-template-columns: minmax(330px, .8fr) minmax(430px, 1.2fr); gap: 20px; }
   .poster-form { position: sticky; top: 20px; padding: 23px; }
   .poster-preview-panel { padding: 18px; }
