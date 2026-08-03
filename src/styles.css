@@ -206,6 +206,7 @@
 .quote-supplier-actions button { flex: 1; }
 .quote-controls select { min-height: 42px; border: 1px solid #ead7da; border-radius: 11px; background: white; padding: 8px 10px; color: var(--ink); font-size: 11px; font-weight: 700; }
 .quote-check { display: inline-flex; min-height: 42px; align-items: center; gap: 7px; border: 1px solid #ead7da; border-radius: 11px; background: white; padding: 8px 10px; color: #685459; font-size: 10.5px; font-weight: 700; }
+.quote-reset-button { min-height: 42px; border: 1px solid #dce9b9; border-radius: 11px; background: #fbfff3; padding: 8px 11px; color: #587900; font-size: 10.5px; font-weight: 850; }
 .quote-kpis { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin-bottom: 12px; }
 .quote-kpis > div { min-height: 82px; overflow: hidden; border: 1px solid var(--line); border-radius: 15px; background: white; padding: 12px; box-shadow: 0 8px 20px rgba(84, 0, 12, .045); }
 .quote-kpis .highlight { border-color: #ddedb7; background: #fbfff3; }
@@ -222,6 +223,13 @@
 .quote-table-frame th { position: sticky; top: 0; z-index: 1; background: #fff7f8; padding: 11px; color: #765f64; font-size: 9px; font-weight: 900; letter-spacing: .055em; text-align: left; text-transform: uppercase; white-space: nowrap; }
 .quote-table-frame td { border-top: 1px solid #f2e8ea; padding: 10px 11px; color: #49383c; white-space: nowrap; }
 .quote-table-frame tbody tr:hover { background: #fffafb; }
+.quote-product-cell { display: flex; min-width: 210px; flex-direction: column; gap: 3px; white-space: normal; }
+.quote-product-cell b { font-size: 10.5px; }
+.quote-product-cell small { color: #9a6810; font-size: 8.5px; font-weight: 750; }
+.quote-quantity-change { display: inline-flex; align-items: center; gap: 6px; }
+.quote-quantity-change s { color: #a58f94; font-size: 9px; }.quote-quantity-change b { color: var(--brand-red); font-size: 12px; }
+.quote-edit-row { min-height: 32px; border: 1px solid #e3d3d6; border-radius: 9px; background: white; padding: 5px 9px; color: var(--brand-red-dark); font-size: 9px; font-weight: 850; }
+.quote-edit-row:hover { border-color: var(--brand-red); background: var(--brand-red-soft); }
 .quote-status { display: inline-block; border-radius: 999px; padding: 4px 8px; font-size: 9px; font-weight: 850; }
 .quote-status.success { background: #effbd9; color: #568000; }.quote-status.danger { background: #ffe9ec; color: #b30015; }.quote-status.warning { background: #fff4d8; color: #966100; }.quote-status.neutral { background: #f2edef; color: #75666a; }
 .quote-total { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; border: 1px solid #e5efc7; border-radius: 13px; background: #fbfff3; padding: 11px; color: #536f00; font-size: 10px; }
@@ -230,9 +238,24 @@
 .quote-modal { width: min(100%, 540px); max-height: 90vh; overflow: auto; border-radius: 20px; background: white; padding: 20px; box-shadow: 0 22px 60px rgba(40, 0, 7, .28); }
 .quote-modal h2 { margin-bottom: 7px; font-size: 18px; }.quote-modal > p { margin-bottom: 16px; color: var(--muted); font-size: 12px; line-height: 1.55; }
 .quote-modal-field { display: block; color: #624e53; font-size: 10.5px; font-weight: 800; }
-.quote-modal-field input { display: block; width: 100%; min-height: 43px; margin-top: 6px; border: 1px solid #dfcbd0; border-radius: 11px; background: white; padding: 9px 11px; color: var(--ink); font-size: 13px; outline: none; }
-.quote-modal-field input:focus { border-color: var(--brand-red); box-shadow: 0 0 0 3px rgba(236, 0, 22, .08); }
+.quote-modal-field input, .quote-modal-field textarea { display: block; width: 100%; min-height: 43px; margin-top: 6px; border: 1px solid #dfcbd0; border-radius: 11px; background: white; padding: 9px 11px; color: var(--ink); font: inherit; font-size: 13px; outline: none; }
+.quote-modal-field textarea { min-height: 72px; resize: vertical; line-height: 1.45; }
+.quote-modal-field input:focus, .quote-modal-field textarea:focus { border-color: var(--brand-red); box-shadow: 0 0 0 3px rgba(236, 0, 22, .08); }
 .quote-field-error { margin-top: 8px; border-radius: 9px; background: #fff0f2; padding: 8px 10px; color: #ae0014; font-size: 10px; font-weight: 750; }
+.quote-purchase-editor { width: min(100%, 650px); }
+.quote-offer-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; margin: 16px 0 8px; color: #59464b; font-size: 10.5px; }
+.quote-offer-heading small { color: #9b858a; font-size: 8.5px; }
+.quote-offer-options { display: grid; gap: 7px; max-height: 270px; overflow: auto; padding: 1px; }
+.quote-offer-options button { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 5px 10px; border: 1px solid #ead9dc; border-radius: 12px; background: white; padding: 10px; color: #59464b; text-align: left; }
+.quote-offer-options button.active { border-color: var(--brand-red); background: #fff7f8; box-shadow: 0 0 0 2px rgba(236, 0, 22, .07); }
+.quote-offer-options button > span { display: flex; align-items: center; gap: 6px; }
+.quote-offer-options button > span:nth-child(2) { flex-direction: column; align-items: flex-end; gap: 1px; }
+.quote-offer-options b { font-size: 10.5px; }.quote-offer-options strong { color: var(--brand-red); font-size: 12px; }
+.quote-offer-options em { border-radius: 999px; background: #effad9; padding: 3px 6px; color: #5b8100; font-size: 7.5px; font-style: normal; font-weight: 850; }
+.quote-offer-options small { color: #968287; font-size: 8px; }.quote-offer-options button > small { grid-column: 1 / -1; }.quote-offer-options small.more-expensive { color: #a56b00; font-weight: 750; }
+.quote-reason-suggestion { margin-top: 7px; border: 1px solid #e6d8db; border-radius: 999px; background: #fffafb; padding: 6px 9px; color: #765f64; font-size: 9px; font-weight: 800; }
+.quote-editor-actions { align-items: center; }
+.quote-reset-item { margin-right: auto; border: 0; background: transparent; padding: 8px 4px; color: #6b850f; font-size: 9.5px; font-weight: 850; }
 .quote-modal-actions, .quote-modal > div:last-child { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .mapping-preview { max-height: 150px; overflow: auto; border: 1px solid #eadbdd; border-radius: 10px; }
 .mapping-preview table { min-width: max-content; border-collapse: collapse; font-size: 9px; }.mapping-preview th, .mapping-preview td { border-bottom: 1px solid #f0e4e6; padding: 6px 8px; text-align: left; white-space: nowrap; }.mapping-preview th { background: #fff7f8; color: #725e63; }
@@ -399,6 +422,7 @@
   .system-card { min-height: 320px; padding: 32px; }
   .home-shell .system-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .quote-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .quote-purchase-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .poster-studio { grid-template-columns: minmax(330px, .8fr) minmax(430px, 1.2fr); gap: 20px; }
   .poster-form { position: sticky; top: 20px; padding: 23px; }
   .poster-preview-panel { padding: 18px; }

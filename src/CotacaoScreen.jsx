@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { COTACAO_STORAGE_KEY, autoMapColumns, calculateOrder, detectHeaderRow, formatBRL, normalizeHeader, readSpreadsheet, supplierFromFilename, toNumber } from './cotacao.js'
+import { COTACAO_STORAGE_KEY, autoMapColumns, calculateOrder, createOrderLineId, detectHeaderRow, ensureOrderLineIds, formatBRL, normalizeHeader, readSpreadsheet, supplierFromFilename, toNumber } from './cotacao.js'
 
 function storedData() {
   try { return JSON.parse(localStorage.getItem(COTACAO_STORAGE_KEY)) || {} } catch { return {} }
@@ -18,6 +18,15 @@ function DownloadCsv({ data, name, children }) {
 }
 
 function Status({ type, children }) { return <span className={`quote-status ${type}`}>{children}</span> }
+
+function PurchaseStatus({ item }) {
+  if (item.status === 'naoEncontrado') return <Status type="danger">Não encontrado</Status>
+  if (item.status === 'ajusteInvalido') return <Status type="danger">Revisar ajuste</Status>
+  if (item.status === 'removidoManual') return <Status type="neutral">Removido</Status>
+  if (item.status === 'ajusteManual') return <Status type="warning">Ajuste manual</Status>
+  if (item.status === 'alternativaPreferida') return <Status type="warning">Preferido</Status>
+  return <Status type="success">Melhor preço</Status>
+}
 
 function mergeBytes(chunks) {
   const bytes = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.length, 0))
@@ -68,15 +77,16 @@ function purchasePage(rows, supplier, pageNumber, totalPages) {
     const height = Math.max(44, lines.length * 25 + 20)
     if (index % 2 === 0) { context.fillStyle = '#fffafb'; context.fillRect(55, y - 27, 1490, height) }
     context.fillStyle = '#4c393e'; context.font = '600 18px Arial, sans-serif'; context.fillText(item.ean, columns[0], y)
-    context.font = '700 18px Arial, sans-serif'; lines.forEach((line, lineIndex) => context.fillText(line, columns[1], y - 12 + lineIndex * 25))
-    context.textAlign = 'right'; context.font = '700 18px Arial, sans-serif'; context.fillText(String(item.quantidadePedida), columns[2] + widths[2] - 10, y)
-    context.textAlign = 'left'; context.font = '600 17px Arial, sans-serif'; context.fillText(item.fornecedorSelecionado, columns[3], y)
+    context.font = '700 18px Arial, sans-serif'; lines.forEach((line, lineIndex) => context.fillText(`${lineIndex === 0 && item.ajusteManual ? '* ' : ''}${line}`, columns[1], y - 12 + lineIndex * 25))
+    context.textAlign = 'right'; context.font = '700 18px Arial, sans-serif'; context.fillText(String(item.quantidadeFinal), columns[2] + widths[2] - 10, y)
+    context.textAlign = 'left'; context.font = '600 17px Arial, sans-serif'; context.fillText(`${item.fornecedorSelecionado}${item.ajusteManual ? ' *' : ''}`, columns[3], y)
     context.textAlign = 'right'; context.font = '700 18px Arial, sans-serif'; context.fillText(formatBRL(item.precoUnitario), columns[4] + widths[4] - 8, y); context.fillText(formatBRL(item.precoTotal), columns[5] + widths[5] - 8, y)
     context.textAlign = 'left'; y += height
   })
   const total = rows.reduce((sum, item) => sum + item.precoTotal, 0)
   context.fillStyle = '#f4ffe0'; context.fillRect(55, 980, 1490, 54)
   context.fillStyle = '#527900'; context.font = '900 23px Arial, sans-serif'; context.fillText(`TOTAL DESTA PÁGINA: ${formatBRL(total)}`, 75, 1015)
+  if (rows.some((item) => item.ajusteManual)) { context.fillStyle = '#806c71'; context.font = '600 15px Arial, sans-serif'; context.fillText('* Escolha ou quantidade ajustada manualmente.', 75, 1060) }
   return canvas
 }
 
@@ -102,7 +112,8 @@ export default function CotacaoScreen({ onBack }) {
   const saved = storedData()
   const [cotacoes, setCotacoes] = useState(saved.cotacoes || {})
   const [fornecedores, setFornecedores] = useState(saved.fornecedores || [])
-  const [pedido, setPedido] = useState(saved.pedido || [])
+  const [pedido, setPedido] = useState(() => ensureOrderLineIds(saved.pedido || []))
+  const [ajustesManuais, setAjustesManuais] = useState(saved.ajustesManuais || {})
   const [activeTab, setActiveTab] = useState('')
   const [warnings, setWarnings] = useState([])
   const [notice, setNotice] = useState('')
@@ -114,15 +125,20 @@ export default function CotacaoScreen({ onBack }) {
   const [supplierToRename, setSupplierToRename] = useState('')
   const [supplierNameDraft, setSupplierNameDraft] = useState('')
   const [supplierRenameError, setSupplierRenameError] = useState('')
+  const [editingLineId, setEditingLineId] = useState('')
+  const [purchaseDraft, setPurchaseDraft] = useState({ fornecedor: '', quantidade: 1, motivo: '' })
+  const [purchaseEditError, setPurchaseEditError] = useState('')
+  const [resetAdjustmentsOpen, setResetAdjustmentsOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [supplierFilter, setSupplierFilter] = useState('todos')
   const [onlyMissing, setOnlyMissing] = useState(false)
-  const resultado = useMemo(() => calculateOrder(cotacoes, pedido), [cotacoes, pedido])
+  const [onlyAdjusted, setOnlyAdjusted] = useState(false)
+  const resultado = useMemo(() => calculateOrder(cotacoes, pedido, ajustesManuais), [ajustesManuais, cotacoes, pedido])
   const supplierList = useMemo(() => [...new Set(Object.values(cotacoes).flatMap((item) => item.ofertas.map((offer) => offer.fornecedor)))].sort((first, second) => first.localeCompare(second, 'pt-BR')), [cotacoes])
   const purchaseTabs = useMemo(() => pedido.length ? [
     { id: 'pedido', label: 'Pedido', description: 'Itens solicitados', count: pedido.length },
-    { id: 'resultado', label: 'Melhor compra', description: 'Resultado calculado', count: resultado.length },
-  ] : [], [pedido.length, resultado.length])
+    { id: 'resultado', label: 'Melhor compra', description: 'Resultado calculado', count: resultado.filter((item) => item.quantidadeFinal > 0 && item.status !== 'naoEncontrado' && item.status !== 'ajusteInvalido').length },
+  ] : [], [pedido.length, resultado])
   const supplierTabs = useMemo(() => supplierList.map((supplier) => ({
     id: `forn:${supplier}`,
     label: supplier,
@@ -130,7 +146,7 @@ export default function CotacaoScreen({ onBack }) {
   })), [cotacoes, supplierList])
   const tabs = useMemo(() => [...purchaseTabs, ...supplierTabs], [purchaseTabs, supplierTabs])
 
-  useEffect(() => { localStorage.setItem(COTACAO_STORAGE_KEY, JSON.stringify({ cotacoes, fornecedores: supplierList, pedido })) }, [cotacoes, pedido, supplierList])
+  useEffect(() => { localStorage.setItem(COTACAO_STORAGE_KEY, JSON.stringify({ cotacoes, fornecedores: supplierList, pedido, ajustesManuais })) }, [ajustesManuais, cotacoes, pedido, supplierList])
   useEffect(() => { if (!tabs.some((tab) => tab.id === activeTab)) setActiveTab(tabs[0]?.id || '') }, [activeTab, tabs])
 
   async function startImport(kind, file) {
@@ -183,9 +199,9 @@ export default function CotacaoScreen({ onBack }) {
         const key = `${ean}|${fornecedorPreferido || ''}`
         if (!ean || !nome || !quantidadePedida) { invalid += 1; return items }
         if (seen.has(key)) { duplicates += 1; return items }
-        seen.add(key); items.push({ ean, nome, quantidadePedida, fornecedorPreferido }); return items
+        seen.add(key); items.push({ id: createOrderLineId(), ean, nome, quantidadePedida: Math.max(0, Math.round(quantidadePedida)), fornecedorPreferido }); return items
       }, [])
-      setPedido(next); setWarnings([...(duplicates ? [`${duplicates} duplicata(s) no pedido foram ignoradas.`] : []), ...(invalid ? [`${invalid} linha(s) sem dados completos foram ignoradas.`] : [])]); setNotice(`${next.length} item(ns) de pedido importado(s).`)
+      setPedido(next); setAjustesManuais({}); setOnlyAdjusted(false); setWarnings([...(duplicates ? [`${duplicates} duplicata(s) no pedido foram ignoradas.`] : []), ...(invalid ? [`${invalid} linha(s) sem dados completos foram ignoradas.`] : [])]); setNotice(`${next.length} item(ns) de pedido importado(s). Os ajustes manuais anteriores foram limpos.`)
     }
     setMapping(null)
   }
@@ -203,14 +219,21 @@ export default function CotacaoScreen({ onBack }) {
     }))
     if (!removedOffers) { setNotice(`Não encontrei ofertas cadastradas para ${supplier}.`); setSupplierToRemove(''); return }
     const nextSuppliers = [...new Set(Object.values(nextCotacoes).flatMap((item) => item.ofertas.map((offer) => offer.fornecedor)))].sort((first, second) => first.localeCompare(second, 'pt-BR'))
-    localStorage.setItem(COTACAO_STORAGE_KEY, JSON.stringify({ cotacoes: nextCotacoes, fornecedores: nextSuppliers, pedido }))
+    let revertedAdjustments = 0
+    const nextAdjustments = Object.fromEntries(Object.entries(ajustesManuais).filter(([, adjustment]) => {
+      const keep = normalizeHeader(adjustment.fornecedor) !== supplierKey
+      if (!keep) revertedAdjustments += 1
+      return keep
+    }))
+    localStorage.setItem(COTACAO_STORAGE_KEY, JSON.stringify({ cotacoes: nextCotacoes, fornecedores: nextSuppliers, pedido, ajustesManuais: nextAdjustments }))
     setCotacoes(nextCotacoes)
     setFornecedores(nextSuppliers)
+    setAjustesManuais(nextAdjustments)
     setActiveTab(pedido.length ? 'resultado' : '')
     setSupplierFilter('todos')
     setSearch('')
     setWarnings([])
-    setNotice(`Tabela de ${supplier} removida: ${removedOffers} oferta(s) excluída(s).`)
+    setNotice(`Tabela de ${supplier} removida: ${removedOffers} oferta(s) excluída(s).${revertedAdjustments ? ` ${revertedAdjustments} ajuste(s) voltaram ao cálculo automático.` : ''}`)
     setSupplierToRemove('')
   }
 
@@ -242,12 +265,14 @@ export default function CotacaoScreen({ onBack }) {
       }),
     }]))
     const nextOrder = pedido.map((item) => normalizeHeader(item.fornecedorPreferido || '') === previousKey ? { ...item, fornecedorPreferido: nextName } : item)
+    const nextAdjustments = Object.fromEntries(Object.entries(ajustesManuais).map(([lineId, adjustment]) => [lineId, normalizeHeader(adjustment.fornecedor) === previousKey ? { ...adjustment, fornecedor: nextName } : adjustment]))
     const nextSuppliers = supplierList.map((supplier) => normalizeHeader(supplier) === previousKey ? nextName : supplier).sort((first, second) => first.localeCompare(second, 'pt-BR'))
 
-    localStorage.setItem(COTACAO_STORAGE_KEY, JSON.stringify({ cotacoes: nextCotacoes, fornecedores: nextSuppliers, pedido: nextOrder }))
+    localStorage.setItem(COTACAO_STORAGE_KEY, JSON.stringify({ cotacoes: nextCotacoes, fornecedores: nextSuppliers, pedido: nextOrder, ajustesManuais: nextAdjustments }))
     setCotacoes(nextCotacoes)
     setFornecedores(nextSuppliers)
     setPedido(nextOrder)
+    setAjustesManuais(nextAdjustments)
     setActiveTab(`forn:${nextName}`)
     setSupplierFilter((current) => normalizeHeader(current) === previousKey ? nextName : current)
     setSupplierToRename('')
@@ -255,37 +280,85 @@ export default function CotacaoScreen({ onBack }) {
     setNotice(`${previousName} agora se chama ${nextName}. ${renamedOffers} oferta(s) atualizada(s).`)
   }
 
-  function clearData() { setCotacoes({}); setFornecedores([]); setPedido([]); setWarnings([]); setNotice('Dados removidos deste dispositivo.'); setClearOpen(false); localStorage.removeItem(COTACAO_STORAGE_KEY) }
+  function openPurchaseEdit(item) {
+    setEditingLineId(item.id)
+    setPurchaseDraft({ fornecedor: item.fornecedorSelecionado || item.fornecedorAutomatico || '', quantidade: item.quantidadeFinal, motivo: item.motivoAjuste || '' })
+    setPurchaseEditError('')
+  }
+
+  function savePurchaseEdit() {
+    const item = resultado.find((row) => row.id === editingLineId)
+    if (!item) { setPurchaseEditError('Não encontrei este item no pedido.'); return }
+    const quantidade = Number(purchaseDraft.quantidade)
+    if (!Number.isInteger(quantidade) || quantidade < 0) { setPurchaseEditError('Informe uma quantidade inteira igual ou maior que zero.'); return }
+    const offers = cotacoes[item.ean]?.ofertas || []
+    const selected = offers.find((offer) => normalizeHeader(offer.fornecedor) === normalizeHeader(purchaseDraft.fornecedor))
+    if (!selected) { setPurchaseEditError('Selecione um fornecedor disponível para este produto.'); return }
+    const motivo = purchaseDraft.motivo.trim()
+    const isAutomatic = normalizeHeader(selected.fornecedor) === normalizeHeader(item.fornecedorAutomatico) && quantidade === item.quantidadeOriginal && !motivo
+    setAjustesManuais((current) => {
+      const next = { ...current }
+      if (isAutomatic) delete next[item.id]
+      else next[item.id] = { fornecedor: selected.fornecedor, quantidade, motivo }
+      return next
+    })
+    setEditingLineId('')
+    setPurchaseEditError('')
+    setNotice(isAutomatic ? `${item.nome} voltou ao cálculo automático.` : `${item.nome} foi ajustado manualmente.`)
+  }
+
+  function restorePurchaseItem(lineId) {
+    const item = resultado.find((row) => row.id === lineId)
+    setAjustesManuais((current) => { const next = { ...current }; delete next[lineId]; return next })
+    setEditingLineId('')
+    setPurchaseEditError('')
+    if (item) setNotice(`${item.nome} voltou ao cálculo automático.`)
+  }
+
+  function restoreAllAdjustments() {
+    const count = Object.keys(ajustesManuais).length
+    setAjustesManuais({})
+    setOnlyAdjusted(false)
+    setResetAdjustmentsOpen(false)
+    setNotice(`${count} ajuste(s) manual(is) foram restaurados para o cálculo automático.`)
+  }
+
+  function clearData() { setCotacoes({}); setFornecedores([]); setPedido([]); setAjustesManuais({}); setWarnings([]); setOnlyAdjusted(false); setNotice('Dados removidos deste dispositivo.'); setClearOpen(false); localStorage.removeItem(COTACAO_STORAGE_KEY) }
 
   const searchText = search.toLocaleLowerCase('pt-BR')
   const pedidoRows = resultado.filter((item) => (!searchText || item.nome.toLocaleLowerCase('pt-BR').includes(searchText) || item.ean.includes(searchText)) && (!onlyMissing || item.status === 'naoEncontrado'))
-  const resultRows = resultado.filter((item) => item.status !== 'naoEncontrado' && (!searchText || item.nome.toLocaleLowerCase('pt-BR').includes(searchText) || item.ean.includes(searchText)) && (supplierFilter === 'todos' || item.fornecedorSelecionado === supplierFilter))
+  const resultRows = resultado.filter((item) => item.status !== 'naoEncontrado' && (!searchText || item.nome.toLocaleLowerCase('pt-BR').includes(searchText) || item.ean.includes(searchText)) && (supplierFilter === 'todos' || item.fornecedorSelecionado === supplierFilter) && (!onlyAdjusted || item.ajusteManual))
+  const purchaseRows = resultRows.filter((item) => item.quantidadeFinal > 0 && item.status !== 'ajusteInvalido' && item.precoTotal !== null)
   const activeSupplier = activeTab.startsWith('forn:') ? activeTab.slice(5) : ''
   const supplierRows = activeSupplier ? Object.values(cotacoes).filter((item) => item.ofertas.some((offer) => normalizeHeader(offer.fornecedor) === normalizeHeader(activeSupplier))).map((item) => ({ ...item, offer: item.ofertas.find((offer) => normalizeHeader(offer.fornecedor) === normalizeHeader(activeSupplier)) })).filter((item) => !searchText || item.nome.toLocaleLowerCase('pt-BR').includes(searchText) || item.ean.includes(searchText)) : []
-  const exportRows = activeTab === 'pedido' ? pedidoRows.map((item) => ({ CODIGO: item.ean, NOME: item.nome, QUANTIDADE: item.quantidadePedida, PREFERIDO: item.fornecedorPreferido || '', STATUS: item.status === 'naoEncontrado' ? 'Não encontrado' : 'Encontrado' })) : activeTab === 'resultado' ? resultRows.map((item) => ({ CODIGO: item.ean, NOME: item.nome, QUANTIDADE: item.quantidadePedida, FORNECEDOR: item.fornecedorSelecionado, PRECO_UNITARIO: item.precoUnitario, PRECO_TOTAL: item.precoTotal })) : supplierRows.map((item) => ({ EAN: item.ean, DESCRICAO: item.nome, PRECO_UNITARIO: item.offer.precoUnitario }))
-  const total = resultRows.reduce((sum, item) => sum + item.precoTotal, 0)
-  const breakdown = resultRows.reduce((items, item) => ({ ...items, [item.fornecedorSelecionado]: (items[item.fornecedorSelecionado] || 0) + item.precoTotal }), {})
+  const exportRows = activeTab === 'pedido' ? pedidoRows.map((item) => ({ CODIGO: item.ean, NOME: item.nome, QUANTIDADE_ORIGINAL: item.quantidadeOriginal, QUANTIDADE_FINAL: item.quantidadeFinal, PREFERIDO: item.fornecedorPreferido || '', AJUSTE_MANUAL: item.ajusteManual ? 'Sim' : 'Não', MOTIVO: item.motivoAjuste, STATUS: item.status })) : activeTab === 'resultado' ? purchaseRows.map((item) => ({ CODIGO: item.ean, NOME: item.nome, QUANTIDADE_ORIGINAL: item.quantidadeOriginal, QUANTIDADE_FINAL: item.quantidadeFinal, FORNECEDOR: item.fornecedorSelecionado, PRECO_UNITARIO: item.precoUnitario, PRECO_TOTAL: item.precoTotal, AJUSTE_MANUAL: item.ajusteManual ? 'Sim' : 'Não', MOTIVO: item.motivoAjuste })) : supplierRows.map((item) => ({ EAN: item.ean, DESCRICAO: item.nome, PRECO_UNITARIO: item.offer.precoUnitario }))
+  const total = purchaseRows.reduce((sum, item) => sum + item.precoTotal, 0)
+  const automaticTotal = resultRows.reduce((sum, item) => sum + (item.precoTotalAutomatico || 0), 0)
+  const adjustmentImpact = total - automaticTotal
+  const adjustedCount = resultado.filter((item) => item.ajusteManual).length
+  const breakdown = purchaseRows.reduce((items, item) => ({ ...items, [item.fornecedorSelecionado]: (items[item.fornecedorSelecionado] || 0) + item.precoTotal }), {})
   const filterLabel = supplierFilter === 'todos' ? 'Todos os fornecedores' : supplierFilter
+  const editingItem = resultado.find((item) => item.id === editingLineId)
 
   function purchaseCanvases() {
     const pageSize = 14
-    const totalPages = Math.ceil(resultRows.length / pageSize)
-    return Array.from({ length: totalPages }, (_, index) => purchasePage(resultRows.slice(index * pageSize, (index + 1) * pageSize), filterLabel, index + 1, totalPages))
+    const totalPages = Math.ceil(purchaseRows.length / pageSize)
+    return Array.from({ length: totalPages }, (_, index) => purchasePage(purchaseRows.slice(index * pageSize, (index + 1) * pageSize), filterLabel, index + 1, totalPages))
   }
 
   async function exportPurchase(format) {
-    if (!resultRows.length) return
+    if (!purchaseRows.length) return
     setExporting(format)
     const filename = `pedido-melhor-compra-${filterLabel.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'completo'}`
     try {
       if (format === 'excel') {
         const { default: ExcelJS } = await import('exceljs')
         const workbook = new ExcelJS.Workbook(); const sheet = workbook.addWorksheet('Melhor compra')
-        sheet.columns = [{ header: 'Código', key: 'codigo', width: 18 }, { header: 'Produto', key: 'produto', width: 46 }, { header: 'Quantidade', key: 'quantidade', width: 13 }, { header: 'Fornecedor', key: 'fornecedor', width: 22 }, { header: 'Preço unitário', key: 'unitario', width: 18 }, { header: 'Preço total', key: 'total', width: 18 }]
-        resultRows.forEach((item) => sheet.addRow({ codigo: item.ean, produto: item.nome, quantidade: item.quantidadePedida, fornecedor: item.fornecedorSelecionado, unitario: item.precoUnitario, total: item.precoTotal }))
+        sheet.columns = [{ header: 'Código', key: 'codigo', width: 18 }, { header: 'Produto', key: 'produto', width: 42 }, { header: 'Qtd. original', key: 'quantidadeOriginal', width: 15 }, { header: 'Qtd. final', key: 'quantidadeFinal', width: 13 }, { header: 'Fornecedor', key: 'fornecedor', width: 22 }, { header: 'Preço unitário', key: 'unitario', width: 18 }, { header: 'Preço total', key: 'total', width: 18 }, { header: 'Ajuste manual', key: 'ajuste', width: 15 }, { header: 'Motivo', key: 'motivo', width: 28 }]
+        purchaseRows.forEach((item) => sheet.addRow({ codigo: item.ean, produto: item.nome, quantidadeOriginal: item.quantidadeOriginal, quantidadeFinal: item.quantidadeFinal, fornecedor: item.fornecedorSelecionado, unitario: item.precoUnitario, total: item.precoTotal, ajuste: item.ajusteManual ? 'Sim' : 'Não', motivo: item.motivoAjuste }))
         sheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } }; sheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEC0016' } }; sheet.views = [{ state: 'frozen', ySplit: 1 }]
         sheet.getColumn('unitario').numFmt = 'R$ #,##0.00'; sheet.getColumn('total').numFmt = 'R$ #,##0.00'
-        const totalRow = sheet.addRow({ produto: `TOTAL - ${filterLabel}`, total }); totalRow.font = { bold: true }; totalRow.getCell(6).numFmt = 'R$ #,##0.00'
+        const totalRow = sheet.addRow({ produto: `TOTAL - ${filterLabel}`, total }); totalRow.font = { bold: true }; totalRow.getCell('total').numFmt = 'R$ #,##0.00'
         saveBlob(new Blob([await workbook.xlsx.writeBuffer()], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `${filename}.xlsx`)
       } else {
         const pages = purchaseCanvases()
@@ -309,21 +382,30 @@ export default function CotacaoScreen({ onBack }) {
     {warnings.map((warning) => <div className="quote-warning" key={warning}>⚠ {warning}</div>)}
     {!tabs.length ? <section className="quote-empty"><span>⌁</span><h2>Comece por uma planilha</h2><p>Importe uma tabela de fornecedor e depois o seu pedido. O sistema permitirá conferir o mapeamento das colunas antes de salvar.</p></section> : <>
       <section className="quote-navigation no-print">
-        {!!purchaseTabs.length && <div className="quote-purchase-nav"><div className="quote-nav-heading"><span className="section-kicker">Etapas da compra</span><small>Revise o pedido e confira a melhor combinação de preços.</small></div><nav>{purchaseTabs.map((tab) => <button key={tab.id} className={activeTab === tab.id ? 'active' : ''} onClick={() => { setActiveTab(tab.id); setSearch(''); setOnlyMissing(false); setSupplierFilter('todos') }}><span className="quote-nav-icon">{tab.id === 'pedido' ? '▤' : '✓'}</span><span><b>{tab.label}</b><small>{tab.description}</small></span><em>{tab.count}</em></button>)}</nav></div>}
-        {!!supplierTabs.length && <div className="quote-supplier-nav"><div className="quote-nav-heading"><span className="section-kicker">Fornecedores importados</span><small>Abra uma tabela para revisar, renomear ou excluir.</small></div><nav className="quote-tabs">{supplierTabs.map((tab) => <button key={tab.id} className={activeTab === tab.id ? 'active' : ''} onClick={() => { setActiveTab(tab.id); setSearch(''); setOnlyMissing(false); setSupplierFilter('todos') }}>{tab.label}<span>{tab.count}</span></button>)}</nav></div>}
+        {!!purchaseTabs.length && <div className="quote-purchase-nav"><div className="quote-nav-heading"><span className="section-kicker">Etapas da compra</span><small>Revise o pedido e confira a melhor combinação de preços.</small></div><nav>{purchaseTabs.map((tab) => <button key={tab.id} className={activeTab === tab.id ? 'active' : ''} onClick={() => { setActiveTab(tab.id); setSearch(''); setOnlyMissing(false); setOnlyAdjusted(false); setSupplierFilter('todos') }}><span className="quote-nav-icon">{tab.id === 'pedido' ? '▤' : '✓'}</span><span><b>{tab.label}</b><small>{tab.description}</small></span><em>{tab.count}</em></button>)}</nav></div>}
+        {!!supplierTabs.length && <div className="quote-supplier-nav"><div className="quote-nav-heading"><span className="section-kicker">Fornecedores importados</span><small>Abra uma tabela para revisar, renomear ou excluir.</small></div><nav className="quote-tabs">{supplierTabs.map((tab) => <button key={tab.id} className={activeTab === tab.id ? 'active' : ''} onClick={() => { setActiveTab(tab.id); setSearch(''); setOnlyMissing(false); setOnlyAdjusted(false); setSupplierFilter('todos') }}>{tab.label}<span>{tab.count}</span></button>)}</nav></div>}
       </section>
-      <section className="quote-content"><div className="quote-controls"><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar por nome ou código..." />{activeTab === 'pedido' && <label className="quote-check"><input type="checkbox" checked={onlyMissing} onChange={(event) => setOnlyMissing(event.target.checked)} /> Apenas não encontrados</label>}{activeTab === 'resultado' && <select value={supplierFilter} onChange={(event) => setSupplierFilter(event.target.value)}><option value="todos">Todos os fornecedores</option>{supplierList.map((supplier) => <option key={supplier}>{supplier}</option>)}</select>}{activeSupplier && <div className="quote-supplier-actions"><button type="button" className="quote-secondary-button" onClick={() => openSupplierRename(activeSupplier)}>✎ Renomear</button><button type="button" className="quote-danger-button" onClick={() => setSupplierToRemove(activeSupplier)}>Excluir</button></div>}</div>
-        {activeTab === 'pedido' && <><div className="quote-kpis"><div><small>Itens no pedido</small><b>{pedido.length}</b></div><div><small>Encontrados</small><b className="success">{resultado.filter((item) => item.status !== 'naoEncontrado').length}</b></div><div><small>Não encontrados</small><b className="danger">{resultado.filter((item) => item.status === 'naoEncontrado').length}</b></div></div><QuoteTable headers={['Código', 'Medicamento', 'Qtd.', 'Preferido', 'Status']} rows={pedidoRows.map((item) => [item.ean, item.nome, item.quantidadePedida, item.fornecedorPreferido || 'Qualquer fornecedor', item.status === 'naoEncontrado' ? <Status type="danger">Não encontrado</Status> : <Status type="success">Encontrado</Status>])} /></>}
-        {activeTab === 'resultado' && <><div className="quote-kpis"><div className="highlight"><small>Total do pedido</small><b>{formatBRL(total)}</b></div><div><small>Itens exibidos</small><b>{resultRows.length}</b></div></div><div className="purchase-export no-print"><div><span className="section-kicker">Exportar melhor compra</span><b>Filtro atual: {filterLabel}</b></div><div><button type="button" disabled={!resultRows.length || exporting} onClick={() => exportPurchase('png')}>{exporting === 'png' ? 'Gerando...' : '⇩ Imagem PNG'}</button><button type="button" disabled={!resultRows.length || exporting} onClick={() => exportPurchase('pdf')}>{exporting === 'pdf' ? 'Gerando...' : '⇩ PDF'}</button><button type="button" disabled={!resultRows.length || exporting} onClick={() => exportPurchase('excel')}>{exporting === 'excel' ? 'Gerando...' : '⇩ Excel'}</button></div></div><QuoteTable headers={['Código', 'Medicamento', 'Qtd.', 'Fornecedor', 'Preço unit.', 'Preço total', 'Status']} rows={resultRows.map((item) => [item.ean, item.nome, item.quantidadePedida, item.fornecedorSelecionado, formatBRL(item.precoUnitario), formatBRL(item.precoTotal), <Status type={item.status === 'selecionado' ? 'success' : 'warning'}>{item.status === 'selecionado' ? 'Melhor preço' : 'Preferido'}</Status>])} /><div className="quote-total"><b>Total: {formatBRL(total)}</b>{Object.entries(breakdown).map(([supplier, value]) => <span key={supplier}>{supplier}: {formatBRL(value)}</span>)}</div></>}
+      <section className="quote-content"><div className="quote-controls"><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar por nome ou código..." />{activeTab === 'pedido' && <label className="quote-check"><input type="checkbox" checked={onlyMissing} onChange={(event) => setOnlyMissing(event.target.checked)} /> Apenas não encontrados</label>}{activeTab === 'resultado' && <><select value={supplierFilter} onChange={(event) => setSupplierFilter(event.target.value)}><option value="todos">Todos os fornecedores</option>{supplierList.map((supplier) => <option key={supplier}>{supplier}</option>)}</select><label className="quote-check"><input type="checkbox" checked={onlyAdjusted} onChange={(event) => setOnlyAdjusted(event.target.checked)} /> Apenas ajustados</label>{adjustedCount > 0 && <button type="button" className="quote-reset-button" onClick={() => setResetAdjustmentsOpen(true)}>↺ Restaurar cálculo</button>}</>}{activeSupplier && <div className="quote-supplier-actions"><button type="button" className="quote-secondary-button" onClick={() => openSupplierRename(activeSupplier)}>✎ Renomear</button><button type="button" className="quote-danger-button" onClick={() => setSupplierToRemove(activeSupplier)}>Excluir</button></div>}</div>
+        {activeTab === 'pedido' && <><div className="quote-kpis"><div><small>Itens no pedido</small><b>{pedido.length}</b></div><div><small>Encontrados</small><b className="success">{resultado.filter((item) => item.status !== 'naoEncontrado').length}</b></div><div><small>Não encontrados</small><b className="danger">{resultado.filter((item) => item.status === 'naoEncontrado').length}</b></div></div><QuoteTable headers={['Código', 'Medicamento', 'Qtd. original', 'Qtd. final', 'Preferido', 'Status']} rows={pedidoRows.map((item) => [item.ean, item.nome, item.quantidadeOriginal, item.quantidadeFinal, item.fornecedorPreferido || 'Qualquer fornecedor', <PurchaseStatus item={item} />])} /></>}
+        {activeTab === 'resultado' && <><div className="quote-kpis quote-purchase-kpis"><div className="highlight"><small>Total final</small><b>{formatBRL(total)}</b></div><div><small>Impacto dos ajustes</small><b className={adjustmentImpact > 0 ? 'danger' : adjustmentImpact < 0 ? 'success' : ''}>{adjustmentImpact > 0 ? '+' : ''}{formatBRL(adjustmentImpact)}</b></div><div><small>Ajustes manuais</small><b>{adjustedCount}</b></div><div><small>Itens para comprar</small><b>{purchaseRows.length}</b></div></div><div className="purchase-export no-print"><div><span className="section-kicker">Exportar melhor compra</span><b>Filtro atual: {filterLabel}{onlyAdjusted ? ' · apenas ajustados' : ''}</b></div><div><button type="button" disabled={!purchaseRows.length || exporting} onClick={() => exportPurchase('png')}>{exporting === 'png' ? 'Gerando...' : '⇩ Imagem PNG'}</button><button type="button" disabled={!purchaseRows.length || exporting} onClick={() => exportPurchase('pdf')}>{exporting === 'pdf' ? 'Gerando...' : '⇩ PDF'}</button><button type="button" disabled={!purchaseRows.length || exporting} onClick={() => exportPurchase('excel')}>{exporting === 'excel' ? 'Gerando...' : '⇩ Excel'}</button></div></div><QuoteTable headers={['Código', 'Medicamento', 'Quantidade', 'Fornecedor', 'Preço unit.', 'Preço total', 'Status', 'Ação']} rows={resultRows.map((item) => [item.ean, <div className="quote-product-cell"><b>{item.nome}</b>{item.motivoAjuste && <small>{item.motivoAjuste}</small>}</div>, item.ajusteManual && item.quantidadeOriginal !== item.quantidadeFinal ? <span className="quote-quantity-change"><s>{item.quantidadeOriginal}</s><b>{item.quantidadeFinal}</b></span> : item.quantidadeFinal, item.fornecedorSelecionado || '—', formatBRL(item.precoUnitario), formatBRL(item.precoTotal), <PurchaseStatus item={item} />, <button type="button" className="quote-edit-row no-print" onClick={() => openPurchaseEdit(item)}>Editar</button>])} /><div className="quote-total"><b>Total: {formatBRL(total)}</b>{Object.entries(breakdown).map(([supplier, value]) => <span key={supplier}>{supplier}: {formatBRL(value)}</span>)}</div></>}
         {activeSupplier && <><div className="quote-kpis"><div><small>Produtos cotados</small><b>{supplierRows.length}</b></div><div><small>Usados no pedido</small><b className="success">{supplierRows.filter((item) => resultado.some((order) => order.ean === item.ean && normalizeHeader(order.fornecedorSelecionado) === normalizeHeader(activeSupplier))).length}</b></div></div><QuoteTable headers={['EAN', 'Descrição', 'Preço', 'Status']} rows={supplierRows.map((item) => [item.ean, item.nome, formatBRL(item.offer.precoUnitario), resultado.some((order) => order.ean === item.ean && normalizeHeader(order.fornecedorSelecionado) === normalizeHeader(activeSupplier)) ? <Status type="success">No pedido</Status> : <Status type="neutral">Não usado</Status>])} /></>}
       </section>
     </>}
     {mapping && <MappingDialog mapping={mapping} onChange={(key, value) => setMapping((current) => ({ ...current, values: { ...current.values, [key]: value } }))} onCancel={() => setMapping(null)} onConfirm={confirmMapping} />}
+    {editingItem && <PurchaseEditDialog item={editingItem} offers={cotacoes[editingItem.ean]?.ofertas || []} draft={purchaseDraft} error={purchaseEditError} onChange={(key, value) => { setPurchaseDraft((current) => ({ ...current, [key]: value })); setPurchaseEditError('') }} onCancel={() => { setEditingLineId(''); setPurchaseEditError('') }} onSave={savePurchaseEdit} onRestore={() => restorePurchaseItem(editingItem.id)} />}
+    {resetAdjustmentsOpen && <div className="quote-modal-backdrop"><section className="quote-modal"><span className="section-kicker">Restaurar cálculo</span><h2>Remover todos os ajustes manuais?</h2><p>Os fornecedores e as quantidades voltarão aos valores calculados automaticamente. O pedido e as tabelas importadas continuarão salvos.</p><div><button type="button" className="quote-secondary-button" onClick={() => setResetAdjustmentsOpen(false)}>Cancelar</button><button type="button" className="quote-danger-solid" onClick={restoreAllAdjustments}>Restaurar todos</button></div></section></div>}
     {supplierToRename && <div className="quote-modal-backdrop"><section className="quote-modal"><span className="section-kicker">Editar fornecedor</span><h2>Renomear {supplierToRename}</h2><p>O novo nome será aplicado às ofertas e às preferências existentes no pedido.</p><label className="quote-modal-field">Nome do fornecedor<input autoFocus value={supplierNameDraft} onChange={(event) => { setSupplierNameDraft(event.target.value); setSupplierRenameError('') }} onKeyDown={(event) => { if (event.key === 'Enter') renameSupplier() }} /></label>{supplierRenameError && <div className="quote-field-error" role="alert">{supplierRenameError}</div>}<div><button type="button" className="quote-secondary-button" onClick={() => { setSupplierToRename(''); setSupplierRenameError('') }}>Cancelar</button><button type="button" className="quote-primary-button" onClick={renameSupplier}>Salvar novo nome</button></div></section></div>}
     {supplierToRemove && <div className="quote-modal-backdrop"><section className="quote-modal"><h2>Excluir tabela de {supplierToRemove}?</h2><p>As ofertas desse fornecedor serão removidas da comparação. Seu pedido continuará salvo.</p><div><button type="button" className="quote-secondary-button" onClick={() => setSupplierToRemove('')}>Cancelar</button><button type="button" className="quote-danger-solid" onClick={() => removeSupplier(supplierToRemove)}>Excluir fornecedor</button></div></section></div>}
     {clearOpen && <div className="quote-modal-backdrop"><section className="quote-modal"><h2>Limpar dados?</h2><p>As cotações e o pedido salvos neste dispositivo serão apagados.</p><div><button className="quote-secondary-button" onClick={() => setClearOpen(false)}>Cancelar</button><button className="quote-danger-button" onClick={clearData}>Sim, limpar</button></div></section></div>}
     <footer className="app-footer"><img src="/drogaria-center-logo.png" alt="Drogaria Center" /><span>Cotações organizadas para uma compra mais eficiente.</span></footer>
   </div></main>
+}
+
+function PurchaseEditDialog({ item, offers, draft, error, onChange, onCancel, onSave, onRestore }) {
+  const sortedOffers = [...offers].sort((first, second) => first.precoUnitario - second.precoUnitario)
+  const bestPrice = sortedOffers[0]?.precoUnitario || 0
+  const quantity = Number.isFinite(Number(draft.quantidade)) ? Math.max(0, Number(draft.quantidade)) : 0
+  return <div className="quote-modal-backdrop"><section className="quote-modal quote-purchase-editor"><span className="section-kicker">Ajustar melhor compra</span><h2>{item.nome}</h2><p>Código {item.ean} · quantidade original {item.quantidadeOriginal}</p><label className="quote-modal-field">Quantidade final<input type="number" min="0" step="1" value={draft.quantidade} onChange={(event) => onChange('quantidade', event.target.value)} /></label><div className="quote-offer-heading"><b>Escolha o fornecedor</b><small>Ordenados pelo menor preço unitário.</small></div><div className="quote-offer-options">{sortedOffers.map((offer, index) => { const active = normalizeHeader(offer.fornecedor) === normalizeHeader(draft.fornecedor); const unitDifference = offer.precoUnitario - bestPrice; return <button type="button" key={offer.fornecedor} className={active ? 'active' : ''} onClick={() => onChange('fornecedor', offer.fornecedor)}><span><b>{offer.fornecedor}</b>{index === 0 && <em>Menor preço</em>}</span><span><strong>{formatBRL(offer.precoUnitario)}</strong><small>Total: {formatBRL(offer.precoUnitario * quantity)}</small></span><small className={unitDifference > 0 ? 'more-expensive' : ''}>{unitDifference > 0 ? `+${formatBRL(unitDifference)} por unidade · +${formatBRL(unitDifference * quantity)} no total` : 'Melhor valor disponível'}</small></button> })}</div><label className="quote-modal-field">Motivo do ajuste (opcional)<textarea value={draft.motivo} maxLength="160" placeholder="Ex.: fechar fatura deste fornecedor" onChange={(event) => onChange('motivo', event.target.value)} /></label><button type="button" className="quote-reason-suggestion" onClick={() => onChange('motivo', 'Fechar fatura')}>+ Fechar fatura</button>{error && <div className="quote-field-error" role="alert">{error}</div>}<div className="quote-editor-actions">{item.ajusteManual && <button type="button" className="quote-reset-item" onClick={onRestore}>↺ Restaurar automático</button>}<button type="button" className="quote-secondary-button" onClick={onCancel}>Cancelar</button><button type="button" className="quote-primary-button" onClick={onSave}>Salvar ajuste</button></div></section></div>
 }
 
 function QuoteTable({ headers, rows }) { return <div className="quote-table-frame"><div><table><thead><tr>{headers.map((header) => <th key={header}>{header}</th>)}</tr></thead><tbody>{rows.length ? rows.map((row, index) => <tr key={index}>{row.map((cell, column) => <td key={column}>{cell}</td>)}</tr>) : <tr><td colSpan={headers.length}>Nenhum registro corresponde ao filtro.</td></tr>}</tbody></table></div></div> }

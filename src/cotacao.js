@@ -84,15 +84,35 @@ export function supplierFromFilename(filename) {
   return word ? word.charAt(0) + word.slice(1).toLowerCase() : 'Fornecedor'
 }
 
-export function calculateOrder(cotacoes, pedido) {
+export function createOrderLineId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
+  return `pedido-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+export function ensureOrderLineIds(pedido) {
+  return pedido.map((item) => item.id ? item : { ...item, id: createOrderLineId() })
+}
+
+export function calculateOrder(cotacoes, pedido, ajustesManuais = {}) {
   return pedido.map((item) => {
     const offers = cotacoes[item.ean]?.ofertas || []
-    if (!offers.length) return { ...item, fornecedorSelecionado: null, precoUnitario: null, precoTotal: null, status: 'naoEncontrado' }
+    const ajuste = ajustesManuais[item.id]
+    const quantidadeOriginal = item.quantidadePedida
+    const adjustedQuantity = Number(ajuste?.quantidade)
+    const quantidadeFinal = ajuste && Number.isInteger(adjustedQuantity) && adjustedQuantity >= 0 ? adjustedQuantity : quantidadeOriginal
+    const base = { ...item, quantidadeOriginal, quantidadeFinal, ajusteManual: Boolean(ajuste), motivoAjuste: ajuste?.motivo || '' }
+    if (!offers.length) return { ...base, fornecedorSelecionado: null, fornecedorAutomatico: null, precoUnitario: null, precoAutomatico: null, precoTotal: null, precoTotalAutomatico: null, impactoAjuste: 0, status: 'naoEncontrado' }
     const best = [...offers].sort((first, second) => first.precoUnitario - second.precoUnitario)[0]
     const preferred = item.fornecedorPreferido && offers.find((offer) => normalizeHeader(offer.fornecedor) === normalizeHeader(item.fornecedorPreferido))
-    if (item.fornecedorPreferido && !preferred) return { ...item, fornecedorSelecionado: null, precoUnitario: null, precoTotal: null, status: 'naoEncontrado' }
-    const selected = preferred || best
-    return { ...item, fornecedorSelecionado: selected.fornecedor, precoUnitario: selected.precoUnitario, precoTotal: selected.precoUnitario * item.quantidadePedida, status: selected.fornecedor === best.fornecedor ? 'selecionado' : 'alternativaPreferida' }
+    const automatic = item.fornecedorPreferido ? preferred : best
+    const manual = ajuste?.fornecedor && offers.find((offer) => normalizeHeader(offer.fornecedor) === normalizeHeader(ajuste.fornecedor))
+    if (ajuste && !manual) return { ...base, fornecedorSelecionado: ajuste.fornecedor, fornecedorAutomatico: automatic?.fornecedor || null, precoUnitario: null, precoAutomatico: automatic?.precoUnitario ?? null, precoTotal: null, precoTotalAutomatico: automatic ? automatic.precoUnitario * quantidadeOriginal : null, impactoAjuste: 0, status: 'ajusteInvalido' }
+    if (!automatic && !manual) return { ...base, fornecedorSelecionado: null, fornecedorAutomatico: null, precoUnitario: null, precoAutomatico: null, precoTotal: null, precoTotalAutomatico: null, impactoAjuste: 0, status: 'naoEncontrado' }
+    const selected = manual || automatic
+    const precoTotal = selected.precoUnitario * quantidadeFinal
+    const precoTotalAutomatico = automatic ? automatic.precoUnitario * quantidadeOriginal : null
+    const status = ajuste ? (quantidadeFinal === 0 ? 'removidoManual' : 'ajusteManual') : selected.fornecedor === best.fornecedor ? 'selecionado' : 'alternativaPreferida'
+    return { ...base, fornecedorSelecionado: selected.fornecedor, fornecedorAutomatico: automatic?.fornecedor || null, precoUnitario: selected.precoUnitario, precoAutomatico: automatic?.precoUnitario ?? null, menorPreco: best.precoUnitario, precoTotal, precoTotalAutomatico, impactoAjuste: ajuste && precoTotalAutomatico !== null ? precoTotal - precoTotalAutomatico : 0, status }
   })
 }
 
