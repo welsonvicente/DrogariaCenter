@@ -153,10 +153,34 @@ async function downloadExcel(output) {
   URL.revokeObjectURL(url)
 }
 
+function PwaInstallButton() {
+  const [installPrompt, setInstallPrompt] = useState(null)
+  const [installed, setInstalled] = useState(() => window.matchMedia('(display-mode: standalone)').matches || Boolean(window.navigator.standalone))
+
+  useEffect(() => {
+    const handlePrompt = (event) => { event.preventDefault(); setInstallPrompt(event) }
+    const handleInstalled = () => { setInstalled(true); setInstallPrompt(null) }
+    window.addEventListener('beforeinstallprompt', handlePrompt)
+    window.addEventListener('appinstalled', handleInstalled)
+    return () => { window.removeEventListener('beforeinstallprompt', handlePrompt); window.removeEventListener('appinstalled', handleInstalled) }
+  }, [])
+
+  if (installed) return <span className="pwa-installed-badge">✓ Instalado</span>
+  if (!installPrompt) return null
+
+  async function install() {
+    await installPrompt.prompt()
+    const choice = await installPrompt.userChoice
+    if (choice.outcome === 'accepted') setInstallPrompt(null)
+  }
+
+  return <button type="button" className="pwa-install-button" onClick={install}><img src="/pwa/favicon-32.png" alt="" />Instalar aplicativo</button>
+}
+
 function HomeScreen({ onSelect }) {
   return <main className="app-shell home-shell"><div className="brand-glow brand-glow-one" /><div className="brand-glow brand-glow-two" /><div className="app-container">
-    <header className="home-topbar"><div className="brand-logo-wrap"><img className="brand-logo" src="/drogaria-center-logo.png" alt="Drogaria Center" /></div><div className="local-chip home-chip"><span />Sistemas internos</div></header>
-    <section className="home-hero"><p className="brand-kicker">Drogaria Center</p><h1>Olá! O que vamos<br />fazer hoje?</h1><p>Escolha uma ferramenta para começar. Tudo foi pensado para tornar a rotina da farmácia mais simples.</p></section>
+    <header className="home-topbar"><div className="brand-logo-wrap"><img className="brand-logo" src="/drogaria-center-logo.png" alt="Drogaria Center" /></div><div className="home-topbar-actions"><PwaInstallButton /><div className="local-chip home-chip"><span />Sistemas internos</div></div></header>
+    <section className="home-hero"><p className="brand-kicker">Utilitários - Drogaria Center</p><h1>Olá! O que vamos<br />fazer hoje?</h1><p>Escolha uma ferramenta para começar. Tudo foi pensado para tornar a rotina da farmácia mais simples.</p></section>
     <section className="system-grid" aria-label="Sistemas disponíveis">
       <button className="system-card system-card-reconcile" onClick={() => onSelect('trier')}><span className="system-icon" aria-hidden="true">↔</span><span className="system-label">Financeiro</span><strong>Conciliação Trier</strong><small>Compare vendas, PIX e cartões em um só lugar.</small><span className="system-action">Abrir conciliação <b aria-hidden="true">→</b></span></button>
       <button className="system-card system-card-posters" onClick={() => onSelect('cartazes')}><span className="system-icon" aria-hidden="true">✦</span><span className="system-label">Comunicação visual</span><strong>Cartazes de oferta</strong><small>Crie cartazes prontos para imprimir e expor na farmácia.</small><span className="system-action">Criar cartazes <b aria-hidden="true">→</b></span></button>
