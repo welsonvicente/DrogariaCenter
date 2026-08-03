@@ -127,6 +127,9 @@
 .poster-form textarea:focus, .poster-form input:focus { border-color: var(--brand-red); box-shadow: 0 0 0 3px rgba(236, 0, 22, .10); }
 .poster-form textarea { min-height: 104px; resize: vertical; line-height: 1.45; }
 .price-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 13px; }
+.individual-print-settings { display: grid; grid-template-columns: 1fr; gap: 10px; margin-top: 14px; border: 1px solid #dbe9b9; border-radius: 13px; background: #fbfff4; padding: 12px; }
+.individual-print-settings .items-per-page { margin-top: 0; }
+.individual-print-settings input, .individual-print-settings select { background: white; }
 .poster-tip { margin: 12px 0 17px; color: #91797e; font-size: 10.5px; line-height: 1.5; }
 .download-actions { display: grid; grid-template-columns: 1fr; gap: 8px; }
 .download-actions button { min-height: 44px; border: 1px solid #e8d5d8; border-radius: 11px; background: white; padding: 10px 13px; color: var(--brand-red-dark); font-size: 11px; font-weight: 850; transition: transform .18s ease, background .18s ease; }
@@ -148,6 +151,7 @@
 .poster-preview-label small { color: #9b8589; font-size: 9px; font-weight: 700; letter-spacing: 0; text-transform: none; }
 .poster-canvas-wrap { display: flex; min-height: 440px; align-items: center; justify-content: center; overflow: hidden; border: 1px solid #f0e4e6; border-radius: 13px; background: repeating-conic-gradient(#f4eff0 0 25%, #fff 0 50%) 50% / 20px 20px; }
 .poster-canvas-wrap canvas { display: block; width: min(100%, 330px); height: auto; background: white; box-shadow: 0 14px 28px rgba(57, 0, 9, .16); }
+.individual-a4-canvas-wrap canvas { width: min(100%, 430px); }
 .batch-canvas-wrap { min-height: 220px; }
 .batch-canvas-wrap canvas { width: 100%; max-width: none; }
 .batch-pagination { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; }
@@ -453,6 +457,7 @@
 
 @media (min-width: 640px) {
   .app-container { padding: 24px 24px 64px; }
+  .individual-print-settings { grid-template-columns: 1fr 1.35fr; }
   .quote-ean-opportunity { flex-direction: row; align-items: center; }
   .quote-ean-opportunity > button { width: auto; }
   .quote-all-suppliers-intro { flex-direction: row; align-items: center; justify-content: space-between; }

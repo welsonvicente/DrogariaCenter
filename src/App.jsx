@@ -317,19 +317,30 @@ async function postersPdfBlob(canvases) {
 }
 
 function offerLayout(itemsPerPage) {
-  const layouts = { 1: [1, 1], 2: [2, 1], 4: [2, 2], 6: [3, 2], 8: [4, 2], 9: [3, 3], 12: [4, 3] }
-  const [columns, rows] = layouts[itemsPerPage] || layouts[8]
-  return { columns, rows }
+  const layouts = {
+    1: [1, 1, 'portrait'],
+    2: [2, 1, 'landscape'],
+    4: [2, 2, 'portrait'],
+    6: [3, 2, 'portrait'],
+    8: [4, 2, 'landscape'],
+    9: [3, 3, 'portrait'],
+    10: [5, 2, 'landscape'],
+    12: [4, 3, 'portrait'],
+  }
+  const [columns, rows, orientation] = layouts[itemsPerPage] || layouts[8]
+  return { columns, rows, orientation }
 }
 
 function drawOfferPage(canvas, background, offers, itemsPerPage) {
-  const { columns, rows } = offerLayout(itemsPerPage)
+  const { columns, rows, orientation } = offerLayout(itemsPerPage)
   const pageWidth = 1800
-  const cellWidth = pageWidth / columns
-  const cellHeight = cellWidth * 1.5
-  const gap = Math.max(10, Math.round(cellWidth * .018))
+  const pageHeight = Math.round(pageWidth * (orientation === 'landscape' ? 210 / 297 : 297 / 210))
+  const pagePadding = 12
+  const cellWidth = (pageWidth - pagePadding * 2) / columns
+  const cellHeight = (pageHeight - pagePadding * 2) / rows
+  const gap = Math.max(6, Math.round(Math.min(cellWidth, cellHeight) * .012))
   canvas.width = pageWidth
-  canvas.height = Math.round(cellHeight * rows)
+  canvas.height = pageHeight
   const context = canvas.getContext('2d')
   context.fillStyle = '#fff'
   context.fillRect(0, 0, canvas.width, canvas.height)
@@ -338,9 +349,11 @@ function drawOfferPage(canvas, background, offers, itemsPerPage) {
     drawPoster(poster, background, offer)
     const column = index % columns
     const row = Math.floor(index / columns)
-    const destinationX = column * cellWidth + gap / 2
-    const destinationY = row * cellHeight + gap / 2
-    context.drawImage(poster, destinationX, destinationY, cellWidth - gap, cellHeight - gap)
+    const destinationWidth = cellWidth - gap
+    const destinationHeight = cellHeight - gap
+    const destinationX = pagePadding + column * cellWidth + gap / 2
+    const destinationY = pagePadding + row * cellHeight + gap / 2
+    context.drawImage(poster, destinationX, destinationY, destinationWidth, destinationHeight)
   })
 }
 
@@ -378,6 +391,9 @@ function CartazesScreen({ onBack }) {
   const [renderError, setRenderError] = useState('')
   const [mode, setMode] = useState('individual')
   const [values, setValues] = useState({ product: 'SONRIDOR RAPID+FORTE 4CP REV', oldPrice: '7,99', price: '1,99' })
+  const [individualQuantity, setIndividualQuantity] = useState(2)
+  const [individualItemsPerPage, setIndividualItemsPerPage] = useState(2)
+  const [individualPage, setIndividualPage] = useState(0)
   const [batchOffers, setBatchOffers] = useState([])
   const [batchFileName, setBatchFileName] = useState('')
   const [itemsPerPage, setItemsPerPage] = useState(8)
@@ -392,9 +408,18 @@ function CartazesScreen({ onBack }) {
     image.src = '/oferta-background.png'
   }, [])
 
+  const normalizedIndividualQuantity = Math.max(1, Math.min(999, Math.round(Number(individualQuantity) || 1)))
+  const totalIndividualPages = Math.max(1, Math.ceil(normalizedIndividualQuantity / individualItemsPerPage))
+  const visibleIndividualCount = Math.max(0, Math.min(individualItemsPerPage, normalizedIndividualQuantity - individualPage * individualItemsPerPage))
+  const individualOrientation = offerLayout(individualItemsPerPage).orientation === 'landscape' ? 'horizontal' : 'vertical'
+
   useEffect(() => {
-    if (background && canvasRef.current) drawPoster(canvasRef.current, background, values)
-  }, [background, values])
+    if (individualPage >= totalIndividualPages) setIndividualPage(Math.max(0, totalIndividualPages - 1))
+  }, [individualPage, totalIndividualPages])
+
+  useEffect(() => {
+    if (background && canvasRef.current) drawOfferPage(canvasRef.current, background, Array.from({ length: visibleIndividualCount }, () => values), individualItemsPerPage)
+  }, [background, individualItemsPerPage, individualPage, values, visibleIndividualCount])
 
   const totalBatchPages = Math.max(1, Math.ceil(batchOffers.length / itemsPerPage))
   const visibleBatchOffers = batchOffers.slice(batchPage * itemsPerPage, (batchPage + 1) * itemsPerPage)
@@ -407,13 +432,23 @@ function CartazesScreen({ onBack }) {
     if (background && visibleBatchOffers.length && batchCanvasRef.current) drawOfferPage(batchCanvasRef.current, background, visibleBatchOffers, itemsPerPage)
   }, [background, visibleBatchOffers, itemsPerPage])
 
+  function createIndividualPages() {
+    return Array.from({ length: totalIndividualPages }, (_, index) => {
+      const page = document.createElement('canvas')
+      const copiesOnPage = Math.min(individualItemsPerPage, normalizedIndividualQuantity - index * individualItemsPerPage)
+      drawOfferPage(page, background, Array.from({ length: copiesOnPage }, () => values), individualItemsPerPage)
+      return page
+    })
+  }
+
   async function downloadPoster(format) {
     try {
       const canvas = canvasRef.current
       if (!canvas || !background) return
       const productSlug = values.product.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'oferta'
-      if (format === 'pdf') saveBlob(await postersPdfBlob([canvas]), `cartaz-${productSlug}.pdf`)
-      else saveBlob(await canvasBlob(canvas, format === 'png' ? 'image/png' : 'image/jpeg', .96), `cartaz-${productSlug}.${format === 'png' ? 'png' : 'jpg'}`)
+      const fileBase = `cartaz-${productSlug}-${normalizedIndividualQuantity}-copias`
+      if (format === 'pdf') saveBlob(await postersPdfBlob(createIndividualPages()), `${fileBase}.pdf`)
+      else saveBlob(await canvasBlob(canvas, format === 'png' ? 'image/png' : 'image/jpeg', .96), `${fileBase}-pagina-${individualPage + 1}.${format === 'png' ? 'png' : 'jpg'}`)
     } catch (exception) { setRenderError(exception.message || 'Não foi possível baixar o cartaz.') }
   }
 
@@ -455,7 +490,7 @@ function CartazesScreen({ onBack }) {
     <header className="home-topbar"><button className="back-button" onClick={onBack}>← Todos os sistemas</button><div className="brand-logo-wrap"><img className="brand-logo" src="/drogaria-center-logo.png" alt="Drogaria Center" /></div></header>
     <section className="poster-heading"><div><p className="brand-kicker">Comunicação visual</p><h1>Gerador de cartazes de oferta</h1><p>Crie um cartaz individual ou importe uma planilha para montar várias ofertas de uma vez.</p></div><span className="poster-live"><i />Prévia ao vivo</span></section>
     <div className="poster-mode-toggle" role="tablist" aria-label="Modo de criação"><button role="tab" aria-selected={mode === 'individual'} className={mode === 'individual' ? 'active' : ''} onClick={() => setMode('individual')}>Cartaz individual</button><button role="tab" aria-selected={mode === 'batch'} className={mode === 'batch' ? 'active' : ''} onClick={() => setMode('batch')}>Lote por XLS</button></div>
-    {mode === 'individual' ? <section className="poster-studio"><form className="poster-form" onSubmit={(event) => event.preventDefault()}><div className="poster-form-title"><span className="future-icon" aria-hidden="true">✦</span><div><span className="section-kicker">Dados da oferta</span><h2>Monte seu cartaz</h2></div></div><label>Nome do produto<textarea value={values.product} maxLength="70" onChange={(event) => setValues((current) => ({ ...current, product: event.target.value }))} placeholder="Ex.: SONRIDOR RAPID+FORTE 4CP REV" /></label><div className="price-fields"><label>Preço anterior<input inputMode="decimal" value={values.oldPrice} onChange={(event) => setValues((current) => ({ ...current, oldPrice: event.target.value }))} placeholder="7,99" /></label><label>Preço da oferta<input inputMode="decimal" value={values.price} onChange={(event) => setValues((current) => ({ ...current, price: event.target.value }))} placeholder="1,99" /></label></div><p className="poster-tip">Use vírgula para os centavos. O cartaz segue o modelo oficial enviado.</p><div className="download-actions"><button type="button" disabled={!background} onClick={() => downloadPoster('pdf')}>⇩ Baixar PDF</button><button type="button" disabled={!background} onClick={() => downloadPoster('png')}>⇩ Baixar PNG</button><button type="button" disabled={!background} onClick={() => downloadPoster('jpg')}>⇩ Baixar JPG</button></div>{renderError && <p className="poster-error" role="alert">{renderError}</p>}</form><section className="poster-preview-panel"><div className="poster-preview-label"><span>Prévia para impressão</span><small>Formato vertical</small></div><div className="poster-canvas-wrap"><canvas ref={canvasRef} aria-label="Prévia do cartaz de oferta" /></div></section></section> : <section className="poster-studio batch-studio"><form className="poster-form" onSubmit={(event) => event.preventDefault()}><div className="poster-form-title"><span className="future-icon" aria-hidden="true">▦</span><div><span className="section-kicker">Lote de ofertas</span><h2>Importe sua planilha</h2></div></div><label className="batch-upload">{batchLoading ? 'Lendo a planilha...' : 'Selecionar arquivo XLS ou XLSX'}<input type="file" accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => importOffers(event.target.files?.[0])} /></label>{batchFileName && <div className="batch-file-status"><b>{batchFileName}</b><span>{batchOffers.length} ofertas identificadas</span></div>}<label className="items-per-page">Cartazes por página<select value={itemsPerPage} onChange={(event) => { setItemsPerPage(Number(event.target.value)); setBatchPage(0) }}><option value="1">1 por página</option><option value="2">2 por página</option><option value="4">4 por página</option><option value="6">6 por página</option><option value="8">8 por página (referência)</option><option value="9">9 por página</option><option value="12">12 por página</option></select></label><p className="poster-tip">O XLS enviado foi reconhecido pelas colunas Produto, Vlr.Promoção e Preço Normal.</p><div className="download-actions"><button type="button" disabled={!background || !batchOffers.length || batchExporting} onClick={() => downloadBatch('pdf')}>{batchExporting ? 'Gerando arquivo...' : '⇩ Baixar PDF completo'}</button><button type="button" disabled={!background || !batchOffers.length || batchExporting} onClick={() => downloadBatch('png')}>⇩ Baixar PNG da página</button></div>{renderError && <p className="poster-error" role="alert">{renderError}</p>}</form><section className="poster-preview-panel"><div className="poster-preview-label"><span>Prévia do lote</span><small>{batchOffers.length ? `Página ${batchPage + 1} de ${totalBatchPages}` : 'Aguardando planilha'}</small></div>{batchOffers.length ? <><div className="poster-canvas-wrap batch-canvas-wrap"><canvas ref={batchCanvasRef} aria-label="Prévia da página de cartazes" /></div><div className="batch-pagination"><button type="button" disabled={batchPage === 0} onClick={() => setBatchPage((page) => page - 1)}>← Anterior</button><span>{visibleBatchOffers.length} cartazes nesta página</span><button type="button" disabled={batchPage + 1 >= totalBatchPages} onClick={() => setBatchPage((page) => page + 1)}>Próxima →</button></div></> : <div className="batch-empty"><span>▦</span><b>Envie uma planilha para visualizar o lote.</b><small>Você poderá escolher quantos cartazes saem em cada página.</small></div>}</section></section>}
+    {mode === 'individual' ? <section className="poster-studio"><form className="poster-form" onSubmit={(event) => event.preventDefault()}><div className="poster-form-title"><span className="future-icon" aria-hidden="true">✦</span><div><span className="section-kicker">Dados da oferta</span><h2>Monte seu cartaz</h2></div></div><label>Nome do produto<textarea value={values.product} maxLength="70" onChange={(event) => setValues((current) => ({ ...current, product: event.target.value }))} placeholder="Ex.: SONRIDOR RAPID+FORTE 4CP REV" /></label><div className="price-fields"><label>Preço anterior<input inputMode="decimal" value={values.oldPrice} onChange={(event) => setValues((current) => ({ ...current, oldPrice: event.target.value }))} placeholder="7,99" /></label><label>Preço da oferta<input inputMode="decimal" value={values.price} onChange={(event) => setValues((current) => ({ ...current, price: event.target.value }))} placeholder="1,99" /></label></div><div className="individual-print-settings"><label>Quantidade de cartazes<input type="number" min="1" max="999" step="1" value={individualQuantity} onChange={(event) => { setIndividualQuantity(event.target.value); setIndividualPage(0) }} onBlur={() => setIndividualQuantity(normalizedIndividualQuantity)} /></label><label className="items-per-page">Tamanho na folha A4<select value={individualItemsPerPage} onChange={(event) => { setIndividualItemsPerPage(Number(event.target.value)); setIndividualPage(0) }}><option value="2">2 por página · maior</option><option value="4">4 por página · grande</option><option value="6">6 por página · médio</option><option value="8">8 por página · pequeno</option><option value="10">10 por página · menor</option><option value="12">12 por página · compacto</option></select></label></div><p className="poster-tip">O PDF inclui todas as cópias em folhas A4. PNG e JPG baixam a página exibida na prévia.</p><div className="download-actions"><button type="button" disabled={!background} onClick={() => downloadPoster('pdf')}>⇩ PDF completo</button><button type="button" disabled={!background} onClick={() => downloadPoster('png')}>⇩ PNG da página</button><button type="button" disabled={!background} onClick={() => downloadPoster('jpg')}>⇩ JPG da página</button></div>{renderError && <p className="poster-error" role="alert">{renderError}</p>}</form><section className="poster-preview-panel"><div className="poster-preview-label"><span>Prévia da folha A4</span><small>A4 {individualOrientation} · {individualItemsPerPage} por página · Página {individualPage + 1} de {totalIndividualPages}</small></div><div className="poster-canvas-wrap individual-a4-canvas-wrap"><canvas ref={canvasRef} aria-label="Prévia da folha A4 com cartazes de oferta" /></div><div className="batch-pagination"><button type="button" disabled={individualPage === 0} onClick={() => setIndividualPage((page) => page - 1)}>← Anterior</button><span>{visibleIndividualCount} cartazes nesta página</span><button type="button" disabled={individualPage + 1 >= totalIndividualPages} onClick={() => setIndividualPage((page) => page + 1)}>Próxima →</button></div></section></section> : <section className="poster-studio batch-studio"><form className="poster-form" onSubmit={(event) => event.preventDefault()}><div className="poster-form-title"><span className="future-icon" aria-hidden="true">▦</span><div><span className="section-kicker">Lote de ofertas</span><h2>Importe sua planilha</h2></div></div><label className="batch-upload">{batchLoading ? 'Lendo a planilha...' : 'Selecionar arquivo XLS ou XLSX'}<input type="file" accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => importOffers(event.target.files?.[0])} /></label>{batchFileName && <div className="batch-file-status"><b>{batchFileName}</b><span>{batchOffers.length} ofertas identificadas</span></div>}<label className="items-per-page">Cartazes por página<select value={itemsPerPage} onChange={(event) => { setItemsPerPage(Number(event.target.value)); setBatchPage(0) }}><option value="1">1 por página</option><option value="2">2 por página</option><option value="4">4 por página</option><option value="6">6 por página</option><option value="8">8 por página (referência)</option><option value="9">9 por página</option><option value="10">10 por página</option><option value="12">12 por página</option></select></label><p className="poster-tip">O XLS enviado foi reconhecido pelas colunas Produto, Vlr.Promoção e Preço Normal.</p><div className="download-actions"><button type="button" disabled={!background || !batchOffers.length || batchExporting} onClick={() => downloadBatch('pdf')}>{batchExporting ? 'Gerando arquivo...' : '⇩ Baixar PDF completo'}</button><button type="button" disabled={!background || !batchOffers.length || batchExporting} onClick={() => downloadBatch('png')}>⇩ Baixar PNG da página</button></div>{renderError && <p className="poster-error" role="alert">{renderError}</p>}</form><section className="poster-preview-panel"><div className="poster-preview-label"><span>Prévia do lote</span><small>{batchOffers.length ? `Página ${batchPage + 1} de ${totalBatchPages}` : 'Aguardando planilha'}</small></div>{batchOffers.length ? <><div className="poster-canvas-wrap batch-canvas-wrap"><canvas ref={batchCanvasRef} aria-label="Prévia da página de cartazes" /></div><div className="batch-pagination"><button type="button" disabled={batchPage === 0} onClick={() => setBatchPage((page) => page - 1)}>← Anterior</button><span>{visibleBatchOffers.length} cartazes nesta página</span><button type="button" disabled={batchPage + 1 >= totalBatchPages} onClick={() => setBatchPage((page) => page + 1)}>Próxima →</button></div></> : <div className="batch-empty"><span>▦</span><b>Envie uma planilha para visualizar o lote.</b><small>Você poderá escolher quantos cartazes saem em cada página.</small></div>}</section></section>}
     <footer className="app-footer"><img src="/drogaria-center-logo.png" alt="Drogaria Center" /><span>Cartazes de oferta prontos para imprimir.</span></footer>
   </div></main>
 }
