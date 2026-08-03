@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
+import CotacaoScreen from './CotacaoScreen.jsx'
 import {
   extractPdfLines, formatMoney, operatorName, parseCieloLines, parsePagPixLines,
   parsePagPixSpreadsheet, parseTrierLines, parseTrierSpreadsheet, reconcile, STATUS_LABEL,
 } from './reconciliation.js'
 
 const EMPTY_FILES = { trier: null, pagpix: null, cielo: null, fechamento: null }
-const SYSTEM_PATHS = { home: '/', trier: '/conciliacao-trier', cartazes: '/cartazes-oferta' }
+const SYSTEM_PATHS = { home: '/', trier: '/conciliacao-trier', cartazes: '/cartazes-oferta', cotacao: '/cotacao-medicamentos' }
 const SOURCES = {
   trier: { title: 'Relação de Vendas (Trier)', hint: 'Base principal — obrigatório', color: 'bg-ink', step: '01', badge: 'Obrigatório' },
   pagpix: { title: 'Relatório Detalhado PaggPix', hint: 'Recebimentos PIX', color: 'bg-teal', step: '02', badge: 'PIX' },
@@ -159,6 +160,7 @@ function HomeScreen({ onSelect }) {
     <section className="system-grid" aria-label="Sistemas disponíveis">
       <button className="system-card system-card-reconcile" onClick={() => onSelect('trier')}><span className="system-icon" aria-hidden="true">↔</span><span className="system-label">Financeiro</span><strong>Conciliação Trier</strong><small>Compare vendas, PIX e cartões em um só lugar.</small><span className="system-action">Abrir conciliação <b aria-hidden="true">→</b></span></button>
       <button className="system-card system-card-posters" onClick={() => onSelect('cartazes')}><span className="system-icon" aria-hidden="true">✦</span><span className="system-label">Comunicação visual</span><strong>Cartazes de oferta</strong><small>Crie cartazes prontos para imprimir e expor na farmácia.</small><span className="system-action">Criar cartazes <b aria-hidden="true">→</b></span></button>
+      <button className="system-card system-card-quotes" onClick={() => onSelect('cotacao')}><span className="system-icon" aria-hidden="true">⌁</span><span className="system-label">Compras</span><strong>Cotação de medicamentos</strong><small>Compare fornecedores e escolha o melhor preço para cada item do pedido.</small><span className="system-action">Abrir cotação <b aria-hidden="true">→</b></span></button>
     </section>
     <p className="home-support">Mais ferramentas serão adicionadas aqui conforme a operação da Drogaria Center evoluir.</p>
     <footer className="app-footer"><img src="/drogaria-center-logo.png" alt="Drogaria Center" /><span>Ferramentas simples para a rotina da farmácia.</span></footer>
@@ -494,6 +496,7 @@ export default function App() {
 
   if (activeSystem === 'home') return <HomeScreen onSelect={navigateTo} />
   if (activeSystem === 'cartazes') return <CartazesScreen onBack={() => navigateTo('home')} />
+  if (activeSystem === 'cotacao') return <CotacaoScreen onBack={() => navigateTo('home')} />
 
   return <main className="app-shell"><div className="brand-glow brand-glow-one" /><div className="brand-glow brand-glow-two" /><div className="app-container">
     <header className="brand-header">
