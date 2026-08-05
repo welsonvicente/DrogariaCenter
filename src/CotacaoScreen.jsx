@@ -1,8 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
-import { COTACAO_STORAGE_KEY, autoMapColumns, buildProductSignature, calculateOrder, compareProductNames, createOrderLineId, detectHeaderRow, ensureOrderLineIds, evaluatePriceOpportunity, formatBRL, matchesProductSearch, normalizeEan, normalizeHeader, parsePriceHistory, productLinkId, readSpreadsheet, supplierFromFilename, toNumber } from './cotacao.js'
+import { COTACAO_STORAGE_KEY, autoMapColumns, buildProductSignature, calculateOrder, compareProductNames, createOrderLineId, detectHeaderRow, ensureOrderLineIds, evaluatePriceOpportunity, formatBRL, matchesProductSearch, normalizeEan, normalizeHeader, parseDcbCatalog, parsePriceHistory, productLinkId, readSpreadsheet, supplierFromFilename, toNumber } from './cotacao.js'
 
 function storedData() {
-  try { return JSON.parse(localStorage.getItem(COTACAO_STORAGE_KEY)) || {} } catch { return {} }
+  try {
+    const saved = JSON.parse(localStorage.getItem(COTACAO_STORAGE_KEY)) || {}
+    if (Array.isArray(saved.pedido)) saved.pedido = saved.pedido.map((item) => item.fornecedorPreferido && item.preferenciaFornecedorAtiva === undefined
+      ? { ...item, laboratorio: item.laboratorio || item.fornecedorPreferido, fornecedorPreferido: null, preferenciaFornecedorAtiva: false }
+      : item)
+    return saved
+  } catch { return {} }
 }
 
 function DownloadCsv({ data, name, children }) {
@@ -31,15 +37,21 @@ function PurchaseStatus({ item }) {
 
 function matchMethodLabel(method) {
   if (method === 'ean') return 'EAN exato'
+  if (method === 'dcb') return 'Mesmo DCB'
   if (method === 'automatic-name') return 'Nome equivalente'
+  if (method === 'auto-reviewed-name') return 'Aceita automaticamente'
   if (method === 'confirmed-name') return 'Vínculo confirmado'
   return 'Sem correspondência'
+}
+
+function isAutomaticallyAcceptedMethod(method) {
+  return method === 'auto-reviewed-name' || method === 'dcb'
 }
 
 function MatchBadge({ item }) {
   if (item.status === 'revisarCorrespondencia') return <Status type="warning">Revisar sugestões</Status>
   if (!item.matchMethod) return <Status type="danger">Não encontrado</Status>
-  return <Status type={item.matchMethod === 'ean' ? 'success' : 'warning'}>{matchMethodLabel(item.matchMethod)}</Status>
+  return <div className="quote-match-badge"><Status type={item.matchMethod === 'ean' || item.matchMethod === 'dcb' ? 'success' : 'warning'}>{matchMethodLabel(item.matchMethod)}</Status>{item.dcb && <small title={item.dcb}>{item.dcb}</small>}</div>
 }
 
 function historyCategory(item, history) {
@@ -145,6 +157,9 @@ export default function CotacaoScreen({ onBack }) {
   const [pedido, setPedido] = useState(() => ensureOrderLineIds(saved.pedido || []))
   const [ajustesManuais, setAjustesManuais] = useState(saved.ajustesManuais || {})
   const [productLinks, setProductLinks] = useState(saved.productLinks || {})
+  const [matchingSettings, setMatchingSettings] = useState({ autoAcceptSafe: true, ...(saved.matchingSettings || {}) })
+  const [dcbCatalog, setDcbCatalog] = useState(saved.dcbCatalog || {})
+  const [dcbInfo, setDcbInfo] = useState(saved.dcbInfo || null)
   const [historicoPrecos, setHistoricoPrecos] = useState(saved.historicoPrecos || {})
   const [historicoInfo, setHistoricoInfo] = useState(saved.historicoInfo || null)
   const [activeTab, setActiveTab] = useState('')
@@ -165,6 +180,7 @@ export default function CotacaoScreen({ onBack }) {
   const [search, setSearch] = useState('')
   const [supplierFilter, setSupplierFilter] = useState('todos')
   const [onlyMissing, setOnlyMissing] = useState(false)
+  const [onlyAutoAccepted, setOnlyAutoAccepted] = useState(false)
   const [onlyAdjusted, setOnlyAdjusted] = useState(false)
   const [onlyCheaperName, setOnlyCheaperName] = useState(false)
   const [historyFilter, setHistoryFilter] = useState('all')
@@ -172,7 +188,7 @@ export default function CotacaoScreen({ onBack }) {
   const [reviewingLineId, setReviewingLineId] = useState('')
   const [matchSearch, setMatchSearch] = useState('')
   const [clearLinksOpen, setClearLinksOpen] = useState(false)
-  const resultado = useMemo(() => calculateOrder(cotacoes, pedido, ajustesManuais, productLinks), [ajustesManuais, cotacoes, pedido, productLinks])
+  const resultado = useMemo(() => calculateOrder(cotacoes, pedido, ajustesManuais, productLinks, matchingSettings, dcbCatalog), [ajustesManuais, cotacoes, dcbCatalog, matchingSettings, pedido, productLinks])
   const supplierList = useMemo(() => [...new Set(Object.values(cotacoes).flatMap((item) => item.ofertas.map((offer) => offer.fornecedor)))].sort((first, second) => first.localeCompare(second, 'pt-BR')), [cotacoes])
   const purchaseTabs = useMemo(() => pedido.length ? [
     { id: 'pedido', label: 'Pedido', description: 'Itens solicitados', count: pedido.length },
@@ -188,7 +204,7 @@ export default function CotacaoScreen({ onBack }) {
   ] : [], [cotacoes, supplierList])
   const tabs = useMemo(() => [...purchaseTabs, ...supplierTabs], [purchaseTabs, supplierTabs])
 
-  useEffect(() => { localStorage.setItem(COTACAO_STORAGE_KEY, JSON.stringify({ cotacoes, fornecedores: supplierList, pedido, ajustesManuais, productLinks, historicoPrecos, historicoInfo })) }, [ajustesManuais, cotacoes, historicoInfo, historicoPrecos, pedido, productLinks, supplierList])
+  useEffect(() => { localStorage.setItem(COTACAO_STORAGE_KEY, JSON.stringify({ cotacoes, fornecedores: supplierList, pedido, ajustesManuais, productLinks, matchingSettings, dcbCatalog, dcbInfo, historicoPrecos, historicoInfo })) }, [ajustesManuais, cotacoes, dcbCatalog, dcbInfo, historicoInfo, historicoPrecos, matchingSettings, pedido, productLinks, supplierList])
   useEffect(() => { if (!tabs.some((tab) => tab.id === activeTab)) setActiveTab(tabs[0]?.id || '') }, [activeTab, tabs])
 
   async function startImport(kind, file) {
@@ -204,9 +220,11 @@ export default function CotacaoScreen({ onBack }) {
       const auto = autoMapColumns(headers, rows)
       const fields = kind === 'cotacao'
         ? [{ key: 'ean', label: 'EAN / código de barras', required: true }, { key: 'nome', label: 'Descrição do produto', required: true }, { key: 'precoUnit', label: 'Preço unitário', required: true }, { key: 'nomeFornecedor', label: 'Nome do fornecedor', type: 'text', required: true }]
+        : kind === 'dcb'
+          ? [{ key: 'ean', label: 'EAN / código de barras', required: true }, { key: 'dcb', label: 'DCB / princípio ativo e apresentação', required: true }]
         : kind === 'historico'
-          ? [{ key: 'ean', label: 'EAN / código de barras', required: true }, { key: 'nome', label: 'Descrição do produto (opcional)' }, { key: 'precoCusto', label: 'Último preço de custo', required: true }, { key: 'fornecedor', label: 'Laboratório (opcional)' }]
-          : [{ key: 'ean', label: 'EAN (opcional)' }, { key: 'codigo', label: 'Código interno (opcional)' }, { key: 'nome', label: 'Descrição do produto', required: true }, { key: 'quantidade', label: 'Quantidade', required: true }, { key: 'fornecedor', label: 'Fornecedor preferido (opcional)' }]
+          ? [{ key: 'ean', label: 'EAN / código de barras', required: true }, { key: 'nome', label: 'Descrição do produto (opcional)' }, { key: 'precoCusto', label: 'Último preço de custo', required: true }, { key: 'laboratorio', label: 'Laboratório (opcional)' }]
+          : [{ key: 'ean', label: 'EAN (opcional)' }, { key: 'codigo', label: 'Código interno (opcional)' }, { key: 'nome', label: 'Descrição do produto', required: true }, { key: 'quantidade', label: 'Quantidade', required: true }, { key: 'laboratorio', label: 'Laboratório do produto (informativo)' }, { key: 'fornecedor', label: 'Fornecedor preferido (opcional)' }]
       setMapping({ kind, headers, rows, fields, values: { ...auto, nomeFornecedor: supplierFromFilename(file.name) }, fileName: file.name })
     } catch (error) { setNotice(error.message || 'Não foi possível ler a planilha.') }
     finally { setLoading('') }
@@ -220,34 +238,56 @@ export default function CotacaoScreen({ onBack }) {
     if (mapping.kind === 'cotacao') {
       const eanIndex = get('ean'); const nameIndex = get('nome'); const priceIndex = get('precoUnit'); const supplier = String(mapping.values.nomeFornecedor || '').trim()
       if (eanIndex === null || nameIndex === null || priceIndex === null || !supplier) { setNotice('Selecione EAN, descrição, preço e informe o fornecedor.'); return }
-      let added = 0; let duplicates = 0; let invalid = 0
-      const next = Object.fromEntries(Object.entries(cotacoes).map(([key, value]) => [key, { ...value, ofertas: [...value.ofertas] }]))
+      let added = 0; let duplicates = 0; let invalid = 0; let replaced = 0
+      const supplierKey = normalizeHeader(supplier)
+      const next = Object.fromEntries(Object.entries(cotacoes).map(([key, value]) => [key, {
+        ...value,
+        ofertas: value.ofertas.filter((offer) => {
+          const fromSameSupplier = normalizeHeader(offer.fornecedor) === supplierKey
+          if (fromSameSupplier) replaced += 1
+          return !fromSameSupplier
+        }),
+      }]))
       mapping.rows.forEach((row) => {
         const ean = normalizeEan(row[eanIndex])
         const nome = String(row[nameIndex] || '').trim(); const precoUnitario = toNumber(row[priceIndex])
-        if (!ean || !nome || precoUnitario === null) { invalid += 1; return }
+        if (!ean || !nome || precoUnitario === null || precoUnitario <= 0) { invalid += 1; return }
         if (!next[ean]) next[ean] = { ean, nome, ofertas: [] }
-        if (next[ean].ofertas.some((offer) => normalizeHeader(offer.fornecedor) === normalizeHeader(supplier))) { duplicates += 1; return }
+        const duplicate = next[ean].ofertas.find((offer) => normalizeHeader(offer.fornecedor) === supplierKey)
+        if (duplicate) { duplicates += 1; if (precoUnitario < duplicate.precoUnitario) duplicate.precoUnitario = precoUnitario; return }
         next[ean].ofertas.push({ fornecedor: supplier, precoUnitario }); added += 1
       })
-      setCotacoes(next); setFornecedores((current) => [...new Set([...current, supplier])].sort((first, second) => first.localeCompare(second, 'pt-BR')))
+      const cleaned = Object.fromEntries(Object.entries(next).filter(([, item]) => item.ofertas.length))
+      setCotacoes(cleaned); setFornecedores((current) => [...new Set([...current, supplier])].sort((first, second) => first.localeCompare(second, 'pt-BR')))
       setWarnings([...(duplicates ? [`${duplicates} duplicata(s) foram ignoradas.`] : []), ...(invalid ? [`${invalid} linha(s) sem dados completos foram ignoradas.`] : [])])
-      setNotice(`${added} oferta(s) de ${supplier} importada(s).`)
+      setNotice(`${added} oferta(s) de ${supplier} importada(s).${replaced ? ` A tabela anterior foi substituída (${replaced} oferta(s)).` : ''}`)
+    } else if (mapping.kind === 'dcb') {
+      const eanIndex = get('ean'); const dcbIndex = get('dcb')
+      if (eanIndex === null || dcbIndex === null) { setNotice('Selecione o EAN e o DCB do produto.'); return }
+      const { catalog, invalid, duplicates, conflicts } = parseDcbCatalog(mapping.rows, { eanIndex, dcbIndex })
+      const total = Object.keys(catalog).length
+      if (!total) { setNotice('Não encontrei produtos com EAN e DCB válidos.'); return }
+      const orderMatched = pedido.filter((item) => catalog[normalizeEan(item.ean)]).length
+      const quotationMatched = Object.keys(cotacoes).filter((ean) => catalog[normalizeEan(ean)]).length
+      setDcbCatalog(catalog)
+      setDcbInfo({ fileName: mapping.fileName, importedAt: new Date().toISOString(), total, orderMatched, quotationMatched })
+      setWarnings([...(duplicates ? [`${duplicates} EAN(s) repetido(s) na base DCB.`] : []), ...(conflicts ? [`${conflicts} EAN(s) com DCB conflitante foram descartados por segurança.`] : []), ...(invalid ? [`${invalid} linha(s) sem EAN ou DCB válido foram ignoradas.`] : [])])
+      setNotice(`Base DCB importada com ${total} EAN(s). ${orderMatched} item(ns) do pedido e ${quotationMatched} produto(s) cotado(s) foram identificados.`)
     } else if (mapping.kind === 'pedido') {
-      const eanIndex = get('ean'); const codeIndex = get('codigo'); const nameIndex = get('nome'); const quantityIndex = get('quantidade'); const supplierIndex = get('fornecedor')
+      const eanIndex = get('ean'); const codeIndex = get('codigo'); const nameIndex = get('nome'); const quantityIndex = get('quantidade'); const laboratoryIndex = get('laboratorio'); const supplierIndex = get('fornecedor')
       if (nameIndex === null || quantityIndex === null || (eanIndex === null && codeIndex === null)) { setNotice('Selecione nome, quantidade e ao menos um identificador (EAN ou código).'); return }
       const seen = new Set(); let duplicates = 0; let invalid = 0
       const next = mapping.rows.reduce((items, row) => {
         const ean = (eanIndex === null ? '' : normalizeEan(row[eanIndex])) || (codeIndex === null ? '' : String(row[codeIndex] || '').trim())
-        const nome = String(row[nameIndex] || '').trim(); const quantidadePedida = toNumber(row[quantityIndex]); const fornecedorPreferido = supplierIndex === null ? null : String(row[supplierIndex] || '').trim() || null
-        const key = `${ean}|${fornecedorPreferido || ''}`
+        const nome = String(row[nameIndex] || '').trim(); const quantidadePedida = toNumber(row[quantityIndex]); const laboratorio = laboratoryIndex === null ? null : String(row[laboratoryIndex] || '').trim() || null; const fornecedorPreferido = supplierIndex === null ? null : String(row[supplierIndex] || '').trim() || null
+        const key = `${ean}|${laboratorio || ''}|${fornecedorPreferido || ''}`
         if (!ean || !nome || !quantidadePedida) { invalid += 1; return items }
         if (seen.has(key)) { duplicates += 1; return items }
-        seen.add(key); items.push({ id: createOrderLineId(), ean, nome, quantidadePedida: Math.max(0, Math.round(quantidadePedida)), fornecedorPreferido }); return items
+        seen.add(key); items.push({ id: createOrderLineId(), ean, nome, quantidadePedida: Math.max(0, Math.round(quantidadePedida)), laboratorio, fornecedorPreferido, preferenciaFornecedorAtiva: Boolean(fornecedorPreferido) }); return items
       }, [])
       setPedido(next); setAjustesManuais({}); setOnlyAdjusted(false); setOnlyCheaperName(false); setWarnings([...(duplicates ? [`${duplicates} duplicata(s) no pedido foram ignoradas.`] : []), ...(invalid ? [`${invalid} linha(s) sem dados completos foram ignoradas.`] : [])]); setNotice(`${next.length} item(ns) de pedido importado(s). Os ajustes manuais anteriores foram limpos.`)
     } else {
-      const eanIndex = get('ean'); const nameIndex = get('nome'); const costIndex = get('precoCusto'); const laboratoryIndex = get('fornecedor')
+      const eanIndex = get('ean'); const nameIndex = get('nome'); const costIndex = get('precoCusto'); const laboratoryIndex = get('laboratorio')
       if (eanIndex === null || costIndex === null) { setNotice('Selecione o EAN e o último preço de custo.'); return }
       const { history, invalid, duplicates } = parsePriceHistory(mapping.rows, { eanIndex, nameIndex, costIndex, laboratoryIndex })
       const total = Object.keys(history).length
@@ -280,7 +320,7 @@ export default function CotacaoScreen({ onBack }) {
       if (!keep) revertedAdjustments += 1
       return keep
     }))
-    localStorage.setItem(COTACAO_STORAGE_KEY, JSON.stringify({ cotacoes: nextCotacoes, fornecedores: nextSuppliers, pedido, ajustesManuais: nextAdjustments, productLinks, historicoPrecos, historicoInfo }))
+    localStorage.setItem(COTACAO_STORAGE_KEY, JSON.stringify({ cotacoes: nextCotacoes, fornecedores: nextSuppliers, pedido, ajustesManuais: nextAdjustments, productLinks, matchingSettings, dcbCatalog, dcbInfo, historicoPrecos, historicoInfo }))
     setCotacoes(nextCotacoes)
     setFornecedores(nextSuppliers)
     setAjustesManuais(nextAdjustments)
@@ -323,7 +363,7 @@ export default function CotacaoScreen({ onBack }) {
     const nextAdjustments = Object.fromEntries(Object.entries(ajustesManuais).map(([lineId, adjustment]) => [lineId, normalizeHeader(adjustment.fornecedor) === previousKey ? { ...adjustment, fornecedor: nextName } : adjustment]))
     const nextSuppliers = supplierList.map((supplier) => normalizeHeader(supplier) === previousKey ? nextName : supplier).sort((first, second) => first.localeCompare(second, 'pt-BR'))
 
-    localStorage.setItem(COTACAO_STORAGE_KEY, JSON.stringify({ cotacoes: nextCotacoes, fornecedores: nextSuppliers, pedido: nextOrder, ajustesManuais: nextAdjustments, productLinks, historicoPrecos, historicoInfo }))
+    localStorage.setItem(COTACAO_STORAGE_KEY, JSON.stringify({ cotacoes: nextCotacoes, fornecedores: nextSuppliers, pedido: nextOrder, ajustesManuais: nextAdjustments, productLinks, matchingSettings, dcbCatalog, dcbInfo, historicoPrecos, historicoInfo }))
     setCotacoes(nextCotacoes)
     setFornecedores(nextSuppliers)
     setPedido(nextOrder)
@@ -406,10 +446,16 @@ export default function CotacaoScreen({ onBack }) {
     setNotice('A referência de custo histórico foi removida. As cotações e o pedido foram mantidos.')
   }
 
-  function clearData() { setCotacoes({}); setFornecedores([]); setPedido([]); setAjustesManuais({}); setProductLinks({}); setHistoricoPrecos({}); setHistoricoInfo(null); setWarnings([]); setOnlyAdjusted(false); setOnlyCheaperName(false); setHistoryFilter('all'); setHistorySort('default'); setReviewingLineId(''); setNotice('Dados removidos deste dispositivo.'); setClearOpen(false); localStorage.removeItem(COTACAO_STORAGE_KEY) }
+  function clearData() { setCotacoes({}); setFornecedores([]); setPedido([]); setAjustesManuais({}); setProductLinks({}); setDcbCatalog({}); setDcbInfo(null); setHistoricoPrecos({}); setHistoricoInfo(null); setWarnings([]); setOnlyMissing(false); setOnlyAutoAccepted(false); setOnlyAdjusted(false); setOnlyCheaperName(false); setHistoryFilter('all'); setHistorySort('default'); setReviewingLineId(''); setNotice('Dados removidos deste dispositivo.'); setClearOpen(false); localStorage.removeItem(COTACAO_STORAGE_KEY) }
 
-  const pedidoRows = resultado.filter((item) => matchesProductSearch(item, search) && (!onlyMissing || item.status === 'naoEncontrado' || item.status === 'revisarCorrespondencia'))
-  const baseResultRows = resultado.filter((item) => item.status !== 'naoEncontrado' && item.status !== 'revisarCorrespondencia' && matchesProductSearch({ ...item, fornecedor: item.fornecedorSelecionado }, search) && (supplierFilter === 'todos' || item.fornecedorSelecionado === supplierFilter) && (!onlyAdjusted || item.ajusteManual) && (!onlyCheaperName || item.temOfertaNomeMaisBarata))
+  function clearDcbCatalog() {
+    setDcbCatalog({})
+    setDcbInfo(null)
+    setNotice('A base DCB foi removida. O sistema voltou a comparar por EAN e descrição.')
+  }
+
+  const pedidoRows = resultado.filter((item) => matchesProductSearch(item, search) && (!onlyMissing || item.status === 'naoEncontrado' || item.status === 'revisarCorrespondencia') && (!onlyAutoAccepted || isAutomaticallyAcceptedMethod(item.matchMethod)))
+  const baseResultRows = resultado.filter((item) => item.status !== 'naoEncontrado' && item.status !== 'revisarCorrespondencia' && matchesProductSearch({ ...item, fornecedor: item.fornecedorSelecionado }, search) && (supplierFilter === 'todos' || item.fornecedorSelecionado === supplierFilter) && (!onlyAdjusted || item.ajusteManual) && (!onlyCheaperName || item.temOfertaNomeMaisBarata) && (!onlyAutoAccepted || isAutomaticallyAcceptedMethod(item.matchMethod)))
   const resultRows = baseResultRows
     .filter((item) => historyFilter === 'all' || historyCategory(item, historicoPrecos) === historyFilter)
     .sort((first, second) => {
@@ -434,7 +480,7 @@ export default function CotacaoScreen({ onBack }) {
   const supplierProductCount = new Set(supplierRows.map((item) => item.ean)).size
   const supplierResultCount = new Set(supplierRows.map((item) => normalizeHeader(item.offer.fornecedor))).size
   const supplierUsedCount = supplierRows.filter(supplierRowIsUsed).length
-  const exportRows = activeTab === 'pedido' ? pedidoRows.map((item) => ({ EAN_PEDIDO: item.ean, PRODUTO_PEDIDO: item.nome, EAN_OFERTA: item.eanOferta || '', PRODUTO_OFERTA: item.nomeOferta || '', CORRESPONDENCIA: matchMethodLabel(item.matchMethod), QUANTIDADE_ORIGINAL: item.quantidadeOriginal, QUANTIDADE_FINAL: item.quantidadeFinal, PREFERIDO: item.fornecedorPreferido || '', AJUSTE_MANUAL: item.ajusteManual ? 'Sim' : 'Não', MOTIVO: item.motivoAjuste, STATUS: item.status })) : activeTab === 'resultado' ? purchaseRows.map((item) => ({ EAN_PEDIDO: item.ean, PRODUTO_PEDIDO: item.nome, EAN_OFERTA: item.eanOferta || '', PRODUTO_OFERTA: item.nomeOferta || '', CORRESPONDENCIA: matchMethodLabel(item.matchMethod), QUANTIDADE_ORIGINAL: item.quantidadeOriginal, QUANTIDADE_FINAL: item.quantidadeFinal, FORNECEDOR: item.fornecedorSelecionado, PRECO_UNITARIO: item.precoUnitario, PRECO_TOTAL: item.precoTotal, AJUSTE_MANUAL: item.ajusteManual ? 'Sim' : 'Não', MOTIVO: item.motivoAjuste })) : supplierRows.map((item) => ({ FORNECEDOR: item.offer.fornecedor, EAN: item.ean, DESCRICAO: item.nome, PRECO_UNITARIO: item.offer.precoUnitario, STATUS: supplierRowIsUsed(item) ? 'No pedido' : 'Não usado' }))
+  const exportRows = activeTab === 'pedido' ? pedidoRows.map((item) => ({ EAN_PEDIDO: item.ean, PRODUTO_PEDIDO: item.nome, LABORATORIO_PEDIDO: item.laboratorio || '', EAN_OFERTA: item.eanOferta || '', PRODUTO_OFERTA: item.nomeOferta || '', CORRESPONDENCIA: matchMethodLabel(item.matchMethod), QUANTIDADE_ORIGINAL: item.quantidadeOriginal, QUANTIDADE_FINAL: item.quantidadeFinal, PREFERIDO: item.preferenciaFornecedorAtiva ? item.fornecedorPreferido || '' : '', AJUSTE_MANUAL: item.ajusteManual ? 'Sim' : 'Não', MOTIVO: item.motivoAjuste, STATUS: item.status })) : activeTab === 'resultado' ? purchaseRows.map((item) => ({ EAN_PEDIDO: item.ean, PRODUTO_PEDIDO: item.nome, LABORATORIO_PEDIDO: item.laboratorio || '', EAN_OFERTA: item.eanOferta || '', PRODUTO_OFERTA: item.nomeOferta || '', CORRESPONDENCIA: matchMethodLabel(item.matchMethod), QUANTIDADE_ORIGINAL: item.quantidadeOriginal, QUANTIDADE_FINAL: item.quantidadeFinal, FORNECEDOR: item.fornecedorSelecionado, PRECO_UNITARIO: item.precoUnitario, PRECO_TOTAL: item.precoTotal, AJUSTE_MANUAL: item.ajusteManual ? 'Sim' : 'Não', MOTIVO: item.motivoAjuste })) : supplierRows.map((item) => ({ FORNECEDOR: item.offer.fornecedor, EAN: item.ean, DESCRICAO: item.nome, PRECO_UNITARIO: item.offer.precoUnitario, STATUS: supplierRowIsUsed(item) ? 'No pedido' : 'Não usado' }))
   const total = purchaseRows.reduce((sum, item) => sum + item.precoTotal, 0)
   const automaticTotal = baseResultRows.reduce((sum, item) => sum + (item.precoTotalAutomatico || 0), 0)
   const adjustmentImpact = total - automaticTotal
@@ -444,6 +490,7 @@ export default function CotacaoScreen({ onBack }) {
   const editingItem = resultado.find((item) => item.id === editingLineId)
   const reviewingItem = resultado.find((item) => item.id === reviewingLineId)
   const reviewPendingCount = resultado.filter((item) => item.sugestoesCorrespondencia.length > 0).length
+  const autoAcceptedCount = resultado.filter((item) => isAutomaticallyAcceptedMethod(item.matchMethod)).length
   const cheaperNameOpportunityCount = resultado.filter((item) => item.temOfertaNomeMaisBarata).length
   const cheaperNameOpportunitySavings = resultado.reduce((sum, item) => sum + (item.temOfertaNomeMaisBarata ? item.economiaNomeTotal : 0), 0)
   const savedLinkCount = Object.keys(productLinks).length
@@ -489,16 +536,17 @@ export default function CotacaoScreen({ onBack }) {
     <header className="home-topbar"><button className="back-button" onClick={onBack}>← Todos os sistemas</button><div className="brand-logo-wrap"><img className="brand-logo" src="/drogaria-center-logo.png" alt="Drogaria Center" /></div></header>
     <section className="quote-heading"><div><p className="brand-kicker">Compras inteligentes</p><h1>Cotação de medicamentos</h1><p>Compare fornecedores, encontre o menor preço por item e monte um pedido de compra mais econômico.</p></div><span className="poster-live"><i />Dados salvos neste dispositivo</span></section>
     <section className="quote-actions no-print"><label className="quote-primary-button">{loading === 'cotacao' ? 'Lendo planilha...' : '↑ Importar fornecedor'}<input type="file" accept=".xls,.xlsx" onChange={(event) => startImport('cotacao', event.target.files?.[0])} /></label><label className="quote-secondary-button">{loading === 'pedido' ? 'Lendo planilha...' : '↑ Importar pedido'}<input type="file" accept=".xls,.xlsx" onChange={(event) => startImport('pedido', event.target.files?.[0])} /></label><DownloadCsv data={exportRows} name="cotacao_drogaria_center.csv">⇩ Exportar aba</DownloadCsv><button className="quote-danger-button" onClick={() => setClearOpen(true)}>Limpar dados</button></section>
+    <section className="quote-dcb-panel no-print"><div><span className="section-kicker">Base de equivalência DCB</span><b>{dcbInfo ? `${dcbInfo.total} EANs prontos para comparar por princípio ativo` : 'Importe a tabela EAN → DCB'}</b><small>{dcbInfo ? `${dcbInfo.fileName} · produtos com o mesmo DCB disputarão automaticamente o menor preço` : 'A base é opcional. Sem ela, o sistema continua usando EAN e descrição.'}</small></div><div><label className="quote-dcb-upload">{loading === 'dcb' ? 'Lendo base...' : dcbInfo ? '↥ Atualizar DCB' : '↥ Importar DCB'}<input type="file" accept=".xls,.xlsx" onChange={(event) => { startImport('dcb', event.target.files?.[0]); event.target.value = '' }} /></label>{dcbInfo && <button type="button" className="quote-history-clear" onClick={clearDcbCatalog}>Remover base</button>}</div></section>
     {notice && <div className="quote-notice" role="status">{notice}<button onClick={() => setNotice('')}>×</button></div>}
     {warnings.map((warning) => <div className="quote-warning" key={warning}>⚠ {warning}</div>)}
     {cheaperNameOpportunityCount > 0 && <div className="quote-ean-opportunity no-print" role="alert"><div><span>EAN diferente com preço menor</span><b>{cheaperNameOpportunityCount} item(ns) têm descrição equivalente e podem economizar até {formatBRL(cheaperNameOpportunitySavings)}.</b><small>Confira a apresentação e o EAN da oferta antes de fechar o pedido.</small></div><button type="button" onClick={() => { setActiveTab('resultado'); setOnlyCheaperName(true); setOnlyAdjusted(false); setSupplierFilter('todos'); setSearch('') }}>Revisar oportunidades</button></div>}
     {!tabs.length ? <section className="quote-empty"><span>⌁</span><h2>Comece por uma planilha</h2><p>Importe uma tabela de fornecedor e depois o seu pedido. O sistema permitirá conferir o mapeamento das colunas antes de salvar.</p></section> : <>
       <section className="quote-navigation no-print">
-        {!!purchaseTabs.length && <div className="quote-purchase-nav"><div className="quote-nav-heading"><span className="section-kicker">Etapas da compra</span><small>Revise o pedido e confira a melhor combinação de preços.</small></div><nav>{purchaseTabs.map((tab) => <button key={tab.id} className={activeTab === tab.id ? 'active' : ''} onClick={() => { setActiveTab(tab.id); setSearch(''); setOnlyMissing(false); setOnlyAdjusted(false); setOnlyCheaperName(false); setSupplierFilter('todos') }}><span className="quote-nav-icon">{tab.id === 'pedido' ? '▤' : '✓'}</span><span><b>{tab.label}</b><small>{tab.description}</small></span><em>{tab.count}</em></button>)}</nav></div>}
+        {!!purchaseTabs.length && <div className="quote-purchase-nav"><div className="quote-nav-heading"><span className="section-kicker">Etapas da compra</span><small>Revise o pedido e confira a melhor combinação de preços.</small></div><nav>{purchaseTabs.map((tab) => <button key={tab.id} className={activeTab === tab.id ? 'active' : ''} onClick={() => { setActiveTab(tab.id); setSearch(''); setOnlyMissing(false); setOnlyAutoAccepted(false); setOnlyAdjusted(false); setOnlyCheaperName(false); setSupplierFilter('todos') }}><span className="quote-nav-icon">{tab.id === 'pedido' ? '▤' : '✓'}</span><span><b>{tab.label}</b><small>{tab.description}</small></span><em>{tab.count}</em></button>)}</nav></div>}
         {!!supplierTabs.length && <div className="quote-supplier-nav"><div className="quote-nav-heading"><span className="section-kicker">Fornecedores importados</span><small>Use “Todos juntos” para pesquisar medicamentos em todas as tabelas.</small></div><nav className="quote-tabs">{supplierTabs.map((tab) => <button key={tab.id} className={`${activeTab === tab.id ? 'active' : ''} ${tab.id === 'forn:__all__' ? 'all-suppliers' : ''}`} onClick={() => { setActiveTab(tab.id); setSearch(''); setOnlyMissing(false); setOnlyAdjusted(false); setOnlyCheaperName(false); setSupplierFilter('todos') }}>{tab.label}<span>{tab.count}</span></button>)}</nav></div>}
       </section>
-      <section className="quote-content"><div className="quote-controls"><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar por nome ou código..." />{activeTab === 'pedido' && <><label className="quote-check"><input type="checkbox" checked={onlyMissing} onChange={(event) => setOnlyMissing(event.target.checked)} /> Apenas não encontrados</label>{reviewPendingCount > 0 && <button type="button" className="quote-match-review-button" onClick={() => { const first = resultado.find((item) => item.sugestoesCorrespondencia.length); setReviewingLineId(first?.id || ''); setMatchSearch('') }}>Revisar correspondências ({reviewPendingCount})</button>}{savedLinkCount > 0 && <button type="button" className="quote-match-clear-button" onClick={() => setClearLinksOpen(true)}>Limpar vínculos ({savedLinkCount})</button>}</>}{activeTab === 'resultado' && <><select value={supplierFilter} onChange={(event) => setSupplierFilter(event.target.value)}><option value="todos">Todos os fornecedores</option>{supplierList.map((supplier) => <option key={supplier}>{supplier}</option>)}</select><label className="quote-check"><input type="checkbox" checked={onlyAdjusted} onChange={(event) => setOnlyAdjusted(event.target.checked)} /> Apenas ajustados</label>{cheaperNameOpportunityCount > 0 && <label className="quote-check quote-ean-filter"><input type="checkbox" checked={onlyCheaperName} onChange={(event) => setOnlyCheaperName(event.target.checked)} /> EAN diferente mais barato ({cheaperNameOpportunityCount})</label>}{historyCount > 0 && <><select className="quote-history-select" value={historyFilter} onChange={(event) => setHistoryFilter(event.target.value)} aria-label="Filtrar oportunidade de preço"><option value="all">Todos os itens ({baseResultRows.length})</option><option value="good">Comprando mais barato ({historyStats.good})</option><option value="stable">Mesmo preço ({historyStats.stable})</option><option value="high">Comprando mais caro ({historyStats.high})</option><option value="missing">Sem histórico ({historyStats.missing})</option></select><select className="quote-history-select" value={historySort} onChange={(event) => setHistorySort(event.target.value)} aria-label="Ordenar oportunidade de preço"><option value="default">Ordem do pedido</option><option value="worst">Pior → melhor oportunidade</option><option value="best">Melhor → pior oportunidade</option></select></>}{adjustedCount > 0 && <button type="button" className="quote-reset-button" onClick={() => setResetAdjustmentsOpen(true)}>↺ Restaurar cálculo</button>}</>}{activeSupplier && <div className="quote-supplier-actions"><button type="button" className="quote-secondary-button" onClick={() => openSupplierRename(activeSupplier)}>✎ Renomear</button><button type="button" className="quote-danger-button" onClick={() => setSupplierToRemove(activeSupplier)}>Excluir</button></div>}</div>
-        {activeTab === 'pedido' && <><div className="quote-kpis quote-order-kpis"><div><small>Itens no pedido</small><b>{pedido.length}</b></div><div><small>Encontrados</small><b className="success">{resultado.filter((item) => item.precoUnitario !== null).length}</b></div><div><small>Para revisar</small><b>{resultado.filter((item) => item.status === 'revisarCorrespondencia').length}</b></div><div><small>Não encontrados</small><b className="danger">{resultado.filter((item) => item.status === 'naoEncontrado').length}</b></div></div><QuoteTable headers={['Código', 'Medicamento', 'Qtd. original', 'Qtd. final', 'Preferido', 'Compra', 'Correspondência', 'Ação']} rows={pedidoRows.map((item) => [item.ean, item.nome, item.quantidadeOriginal, item.quantidadeFinal, item.fornecedorPreferido || 'Qualquer fornecedor', <PurchaseStatus item={item} />, <MatchBadge item={item} />, <button type="button" className="quote-edit-row no-print" onClick={() => { setReviewingLineId(item.id); setMatchSearch('') }}>Revisar</button>])} /></>}
+      <section className="quote-content"><div className="quote-auto-match-setting no-print"><div><span className="section-kicker">Correspondência inteligente</span><b>Aceitar automaticamente equivalências seguras</b><small>Somente quando princípio ativo, dosagem, embalagem e liberação coincidirem. Casos ambíguos continuam em revisão.</small></div><label className="quote-switch"><input type="checkbox" checked={matchingSettings.autoAcceptSafe} onChange={(event) => { const enabled = event.target.checked; setMatchingSettings({ autoAcceptSafe: enabled }); setOnlyAutoAccepted(false); setNotice(enabled ? 'Aceitação automática segura ativada.' : 'Aceitação automática desativada; as equivalências voltarão para revisão.') }} /><span />{matchingSettings.autoAcceptSafe ? 'Ativada' : 'Desativada'}</label></div><div className="quote-controls"><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar por nome ou código..." />{activeTab === 'pedido' && <><label className="quote-check"><input type="checkbox" checked={onlyMissing} onChange={(event) => setOnlyMissing(event.target.checked)} /> Apenas não encontrados</label>{autoAcceptedCount > 0 && <label className="quote-check quote-auto-filter"><input type="checkbox" checked={onlyAutoAccepted} onChange={(event) => { setOnlyAutoAccepted(event.target.checked); if (event.target.checked) setOnlyMissing(false) }} /> Aceitas automaticamente ({autoAcceptedCount})</label>}{reviewPendingCount > 0 && <button type="button" className="quote-match-review-button" onClick={() => { const first = resultado.find((item) => item.sugestoesCorrespondencia.length); setReviewingLineId(first?.id || ''); setMatchSearch('') }}>Revisar correspondências ({reviewPendingCount})</button>}{savedLinkCount > 0 && <button type="button" className="quote-match-clear-button" onClick={() => setClearLinksOpen(true)}>Limpar vínculos ({savedLinkCount})</button>}</>}{activeTab === 'resultado' && <><select value={supplierFilter} onChange={(event) => setSupplierFilter(event.target.value)}><option value="todos">Todos os fornecedores</option>{supplierList.map((supplier) => <option key={supplier}>{supplier}</option>)}</select>{autoAcceptedCount > 0 && <label className="quote-check quote-auto-filter"><input type="checkbox" checked={onlyAutoAccepted} onChange={(event) => setOnlyAutoAccepted(event.target.checked)} /> Aceitas automaticamente ({autoAcceptedCount})</label>}<label className="quote-check"><input type="checkbox" checked={onlyAdjusted} onChange={(event) => setOnlyAdjusted(event.target.checked)} /> Apenas ajustados</label>{cheaperNameOpportunityCount > 0 && <label className="quote-check quote-ean-filter"><input type="checkbox" checked={onlyCheaperName} onChange={(event) => setOnlyCheaperName(event.target.checked)} /> EAN diferente mais barato ({cheaperNameOpportunityCount})</label>}{historyCount > 0 && <><select className="quote-history-select" value={historyFilter} onChange={(event) => setHistoryFilter(event.target.value)} aria-label="Filtrar oportunidade de preço"><option value="all">Todos os itens ({baseResultRows.length})</option><option value="good">Comprando mais barato ({historyStats.good})</option><option value="stable">Mesmo preço ({historyStats.stable})</option><option value="high">Comprando mais caro ({historyStats.high})</option><option value="missing">Sem histórico ({historyStats.missing})</option></select><select className="quote-history-select" value={historySort} onChange={(event) => setHistorySort(event.target.value)} aria-label="Ordenar oportunidade de preço"><option value="default">Ordem do pedido</option><option value="worst">Pior → melhor oportunidade</option><option value="best">Melhor → pior oportunidade</option></select></>}{adjustedCount > 0 && <button type="button" className="quote-reset-button" onClick={() => setResetAdjustmentsOpen(true)}>↺ Restaurar cálculo</button>}</>}{activeSupplier && <div className="quote-supplier-actions"><button type="button" className="quote-secondary-button" onClick={() => openSupplierRename(activeSupplier)}>✎ Renomear</button><button type="button" className="quote-danger-button" onClick={() => setSupplierToRemove(activeSupplier)}>Excluir</button></div>}</div>
+        {activeTab === 'pedido' && <><div className="quote-kpis quote-order-kpis"><div><small>Itens no pedido</small><b>{pedido.length}</b></div><div><small>Encontrados</small><b className="success">{resultado.filter((item) => item.precoUnitario !== null).length}</b></div><div><small>Para revisar</small><b>{resultado.filter((item) => item.status === 'revisarCorrespondencia').length}</b></div><div><small>Não encontrados</small><b className="danger">{resultado.filter((item) => item.status === 'naoEncontrado').length}</b></div></div><QuoteTable headers={['Código', 'Medicamento', 'Laboratório', 'Qtd. original', 'Qtd. final', 'Preferência', 'Compra', 'Correspondência', 'Ação']} rows={pedidoRows.map((item) => [item.ean, item.nome, item.laboratorio || '—', item.quantidadeOriginal, item.quantidadeFinal, item.preferenciaFornecedorAtiva ? item.fornecedorPreferido : 'Menor preço', <PurchaseStatus item={item} />, <MatchBadge item={item} />, <button type="button" className="quote-edit-row no-print" onClick={() => { setReviewingLineId(item.id); setMatchSearch('') }}>Revisar</button>])} /></>}
         {activeTab === 'resultado' && <><div className="quote-kpis quote-purchase-kpis"><div className="highlight"><small>Total final</small><b>{formatBRL(total)}</b></div><div><small>Impacto dos ajustes</small><b className={adjustmentImpact > 0 ? 'danger' : adjustmentImpact < 0 ? 'success' : ''}>{adjustmentImpact > 0 ? '+' : ''}{formatBRL(adjustmentImpact)}</b></div><div><small>Ajustes manuais</small><b>{adjustedCount}</b></div><div><small>Itens para comprar</small><b>{purchaseRows.length}</b></div></div><div className="quote-history-panel no-print"><div><span className="section-kicker">Histórico de preço · opcional</span><b>{historyCount ? `${historyMatchedCount} comparados · ${historyStats.good} mais baratos · ${historyStats.high} mais caros${historyFilter !== 'all' ? ` · ${resultRows.length} exibidos` : ''}` : 'Compare a cotação com o último custo pago'}</b><small>{historyCount ? `${historicoInfo?.fileName || 'Planilha de estoque'} · ${historyCount} referências por EAN · os filtros de oportunidade não alteram totais ou exportações` : 'Envie o relatório de estoque depois de calcular a Melhor compra. Esta informação não entra nas exportações.'}</small></div><div><label className="quote-history-upload">{loading === 'historico' ? 'Lendo custos...' : historyCount ? '↥ Atualizar histórico' : '↥ Importar custo anterior'}<input type="file" accept=".xls,.xlsx" onChange={(event) => { startImport('historico', event.target.files?.[0]); event.target.value = '' }} /></label>{historyCount > 0 && <button type="button" className="quote-history-clear" onClick={clearPriceHistory}>Remover referência</button>}</div></div><div className="purchase-export no-print"><div><span className="section-kicker">Exportar melhor compra</span><b>Filtro atual: {filterLabel}{onlyAdjusted ? ' · apenas ajustados' : ''}{onlyCheaperName ? ' · EAN diferente mais barato' : ''}</b></div><div><button type="button" disabled={!purchaseRows.length || exporting} onClick={() => exportPurchase('png')}>{exporting === 'png' ? 'Gerando...' : '⇩ Imagem PNG'}</button><button type="button" disabled={!purchaseRows.length || exporting} onClick={() => exportPurchase('pdf')}>{exporting === 'pdf' ? 'Gerando...' : '⇩ PDF'}</button><button type="button" disabled={!purchaseRows.length || exporting} onClick={() => exportPurchase('excel')}>{exporting === 'excel' ? 'Gerando...' : '⇩ Excel'}</button></div></div><QuoteTable headers={['EAN pedido', 'Medicamento', 'Quantidade', 'Fornecedor', 'Preço unit.', 'Histórico de preço', 'Preço total', 'Correspondência', 'Status', 'Ação']} rows={resultRows.map((item) => [item.ean, <div className="quote-product-cell"><b>{item.nome}</b>{(item.eanOferta !== item.ean || normalizeHeader(item.nomeOferta) !== normalizeHeader(item.nome)) && <small className="quote-offer-source">Oferta: {item.nomeOferta} · EAN {item.eanOferta}</small>}{item.temOfertaNomeMaisBarata && <small className="quote-ean-opportunity-row">⚠ EAN diferente: {item.melhorOfertaNome.fornecedor} por {formatBRL(item.melhorOfertaNome.precoUnitario)} · economia de {formatBRL(item.economiaNomeTotal)}</small>}{item.motivoAjuste && <small>{item.motivoAjuste}</small>}</div>, item.ajusteManual && item.quantidadeOriginal !== item.quantidadeFinal ? <span className="quote-quantity-change"><s>{item.quantidadeOriginal}</s><b>{item.quantidadeFinal}</b></span> : item.quantidadeFinal, item.fornecedorSelecionado || '—', formatBRL(item.precoUnitario), <PriceHistoryCell item={item} reference={historicoPrecos[item.ean]} />, formatBRL(item.precoTotal), <MatchBadge item={item} />, <PurchaseStatus item={item} />, <div className="quote-row-actions no-print">{item.temOfertaNomeMaisBarata && <button type="button" className="quote-review-ean" onClick={() => { setReviewingLineId(item.id); setMatchSearch('') }}>Revisar EAN</button>}<button type="button" className="quote-edit-row" onClick={() => openPurchaseEdit(item)}>Editar</button></div>])} /><div className="quote-total"><b>Total: {formatBRL(total)}</b>{Object.entries(breakdown).map(([supplier, value]) => <span key={supplier}>{supplier}: {formatBRL(value)}</span>)}</div></>}
         {(activeSupplier || allSuppliersActive) && <>{allSuppliersActive && <div className="quote-all-suppliers-intro"><div><span className="section-kicker">Pesquisa unificada</span><b>{search ? `Resultados semelhantes a “${search}”` : 'Todos os produtos de todos os fornecedores'}</b><small>Pesquise por nome completo, parte do nome ou EAN. As ofertas são organizadas por descrição e menor preço.</small></div><span>{supplierRows.length} oferta(s)</span></div>}<div className={`quote-kpis ${allSuppliersActive ? 'quote-all-suppliers-kpis' : ''}`}><div><small>{allSuppliersActive ? 'Ofertas encontradas' : 'Produtos cotados'}</small><b>{supplierRows.length}</b></div>{allSuppliersActive && <div><small>Produtos diferentes</small><b>{supplierProductCount}</b></div>}<div><small>{allSuppliersActive ? 'Fornecedores' : 'Usados no pedido'}</small><b className={!allSuppliersActive ? 'success' : ''}>{allSuppliersActive ? supplierResultCount : supplierUsedCount}</b></div>{allSuppliersActive && <div><small>Ofertas no pedido</small><b className="success">{supplierUsedCount}</b></div>}</div><QuoteTable headers={allSuppliersActive ? ['Fornecedor', 'EAN', 'Descrição', 'Preço', 'Status'] : ['EAN', 'Descrição', 'Preço', 'Status']} rows={supplierRows.map((item) => allSuppliersActive ? [<b className="quote-supplier-name">{item.offer.fornecedor}</b>, item.ean, item.nome, formatBRL(item.offer.precoUnitario), supplierRowIsUsed(item) ? <Status type="success">No pedido</Status> : <Status type="neutral">Não usado</Status>] : [item.ean, item.nome, formatBRL(item.offer.precoUnitario), supplierRowIsUsed(item) ? <Status type="success">No pedido</Status> : <Status type="neutral">Não usado</Status>])} /></>}
       </section>
@@ -541,7 +589,34 @@ function ProductMatchDialog({ item, products, productLinks, search, onSearch, on
   ;[...item.produtosCorrespondentes, ...item.sugestoesCorrespondencia, ...searched].forEach((product) => { if (!candidatesByEan.has(product.ean)) candidatesByEan.set(product.ean, product) })
   const candidates = [...candidatesByEan.values()]
   const orderSignature = buildProductSignature(item.nome)
-  return <div className="quote-modal-backdrop"><section className="quote-modal quote-match-dialog"><span className="section-kicker">Revisar correspondência</span><h2>{item.nome}</h2><p>EAN do pedido: <b>{item.ean}</b></p><div className="quote-signature"><small>Apresentação identificada</small><b>{signatureSummary(orderSignature)}</b></div><label className="quote-modal-field quote-match-search">Buscar manualmente nos fornecedores<input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Digite nome ou EAN para marca, genérico ou outra descrição..." /></label><div className="quote-match-list">{candidates.length ? candidates.map((candidate) => { const exact = candidate.ean === item.ean; const linkState = productLinks[productLinkId(item, candidate.ean)]; const comparison = candidate.comparison || compareProductNames(item.nome, candidate.nome, candidate.ofertas[0]?.fornecedor || ''); const conflict = comparison.status === 'conflict'; const suppliers = [...new Set(candidate.ofertas.map((offer) => offer.fornecedor))].join(', '); const lowest = Math.min(...candidate.ofertas.map((offer) => offer.precoUnitario)); const matched = item.produtosCorrespondentes.some((product) => product.ean === candidate.ean); return <article key={candidate.ean} className={`quote-match-card ${conflict ? 'conflict' : matched ? 'matched' : ''}`}><div className="quote-match-card-heading"><div><b>{candidate.nome}</b><small>EAN {candidate.ean} · {suppliers}</small></div><strong>{formatBRL(lowest)}</strong></div><div className="quote-signature compact"><small>Apresentação da oferta</small><b>{signatureSummary(comparison.candidate)}</b></div><div className="quote-match-meta"><span>{exact ? 'EAN exato' : linkState === 'approved' ? 'Vínculo confirmado' : linkState === 'rejected' ? 'Rejeitado' : candidate.method === 'automatic-name' ? 'Nome equivalente automático' : candidate.method === 'suggestion' ? `Sugestão · ${comparison.score}%` : `Busca manual · ${comparison.score}%`}</span>{conflict && <em>Incompatível: {comparison.conflicts.join(', ')}</em>}</div><div className="quote-match-actions">{exact ? <span className="quote-match-locked">✓ Correspondência obrigatória pelo EAN</span> : linkState === 'rejected' ? <button type="button" className="quote-secondary-button" onClick={() => onDecision(candidate.ean, null)}>Reavaliar</button> : conflict ? <span className="quote-match-locked danger">Não pode ser vinculado</span> : <><button type="button" className="quote-primary-button" onClick={() => onDecision(candidate.ean, 'approved')}>{linkState === 'approved' ? '✓ Confirmado' : 'Confirmar equivalência'}</button><button type="button" className="quote-danger-button" onClick={() => onDecision(candidate.ean, 'rejected')}>Não é o mesmo</button></>}</div></article> }) : <div className="quote-match-empty">{searchText.length >= 2 ? 'Nenhum produto corresponde à busca.' : 'Nenhuma sugestão pendente. Use a busca para localizar uma marca ou genérico manualmente.'}</div>}</div><div className="quote-modal-actions"><button type="button" className="quote-secondary-button" onClick={onClose}>Concluir revisão</button></div></section></div>
+  return <div className="quote-modal-backdrop"><section className="quote-modal quote-match-dialog">
+    <span className="section-kicker">Revisar correspondência</span>
+    <h2>{item.nome}</h2>
+    <p>EAN do pedido: <b>{item.ean}</b></p>
+    {item.dcb && <div className="quote-signature quote-dcb-signature"><small>DCB identificado</small><b>{item.dcb}</b></div>}
+    <div className="quote-signature"><small>Apresentação identificada</small><b>{signatureSummary(orderSignature)}</b></div>
+    <label className="quote-modal-field quote-match-search">Buscar manualmente nos fornecedores<input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Digite nome ou EAN para marca, genérico ou outra descrição..." /></label>
+    <div className="quote-match-list">{candidates.length ? candidates.map((candidate) => {
+      const exact = candidate.ean === item.ean
+      const dcbMatched = candidate.method === 'dcb'
+      const linkState = productLinks[productLinkId(item, candidate.ean)]
+      const comparison = candidate.comparison || compareProductNames(item.nome, candidate.nome, candidate.ofertas[0]?.fornecedor || '')
+      const conflict = !dcbMatched && comparison.status === 'conflict'
+      const suppliers = [...new Set(candidate.ofertas.map((offer) => offer.fornecedor))].join(', ')
+      const validPrices = candidate.ofertas.map((offer) => offer.precoUnitario).filter((price) => Number.isFinite(price) && price > 0)
+      const lowest = validPrices.length ? Math.min(...validPrices) : null
+      const matched = item.produtosCorrespondentes.some((product) => product.ean === candidate.ean)
+      const methodLabel = exact ? 'EAN exato' : linkState === 'approved' ? 'Vínculo confirmado' : linkState === 'rejected' ? 'Rejeitado' : dcbMatched ? 'Mesmo DCB' : candidate.method === 'automatic-name' ? 'Nome equivalente automático' : candidate.method === 'auto-reviewed-name' ? 'Aceita automaticamente' : candidate.method === 'suggestion' ? `Sugestão · ${comparison.score}%` : `Busca manual · ${comparison.score}%`
+      return <article key={candidate.ean} className={`quote-match-card ${conflict ? 'conflict' : matched ? 'matched' : ''}`}>
+        <div className="quote-match-card-heading"><div><b>{candidate.nome}</b><small>EAN {candidate.ean} · {suppliers}</small></div><strong>{formatBRL(lowest)}</strong></div>
+        {dcbMatched && candidate.dcb && <div className="quote-signature compact quote-dcb-signature"><small>DCB da oferta</small><b>{candidate.dcb}</b></div>}
+        <div className="quote-signature compact"><small>Apresentação da oferta</small><b>{signatureSummary(comparison.candidate)}</b></div>
+        <div className="quote-match-meta"><span>{methodLabel}</span>{comparison.reviewReasons?.length > 0 && !dcbMatched && <em className="review">Revisar: {comparison.reviewReasons.join(', ')}</em>}{conflict && <em>Incompatível: {comparison.conflicts.join(', ')}</em>}</div>
+        <div className="quote-match-actions">{exact ? <span className="quote-match-locked">✓ Correspondência obrigatória pelo EAN</span> : linkState === 'rejected' ? <button type="button" className="quote-secondary-button" onClick={() => onDecision(candidate.ean, null)}>Reavaliar</button> : dcbMatched ? <><span className="quote-match-locked">✓ Correspondência confirmada pela base DCB</span><button type="button" className="quote-danger-button" onClick={() => onDecision(candidate.ean, 'rejected')}>Não usar este vínculo</button></> : conflict ? <span className="quote-match-locked danger">Não pode ser vinculado</span> : <><button type="button" className="quote-primary-button" onClick={() => onDecision(candidate.ean, 'approved')}>{linkState === 'approved' ? '✓ Confirmado' : 'Confirmar equivalência'}</button><button type="button" className="quote-danger-button" onClick={() => onDecision(candidate.ean, 'rejected')}>Não é o mesmo</button></>}</div>
+      </article>
+    }) : <div className="quote-match-empty">{searchText.length >= 2 ? 'Nenhum produto corresponde à busca.' : 'Nenhuma sugestão pendente. Use a busca para localizar uma marca ou genérico manualmente.'}</div>}</div>
+    <div className="quote-modal-actions"><button type="button" className="quote-secondary-button" onClick={onClose}>Concluir revisão</button></div>
+  </section></div>
 }
 
 function PriceHistoryCell({ item, reference }) {
@@ -559,7 +634,7 @@ function PriceHistoryCell({ item, reference }) {
 function QuoteTable({ headers, rows }) { return <div className="quote-table-frame"><div><table><thead><tr>{headers.map((header) => <th key={header}>{header}</th>)}</tr></thead><tbody>{rows.length ? rows.map((row, index) => <tr key={index}>{row.map((cell, column) => <td key={column}>{cell}</td>)}</tr>) : <tr><td colSpan={headers.length}>Nenhum registro corresponde ao filtro.</td></tr>}</tbody></table></div></div> }
 
 function MappingDialog({ mapping, onChange, onCancel, onConfirm }) {
-  const title = mapping.kind === 'cotacao' ? 'Tabela do fornecedor' : mapping.kind === 'historico' ? 'Histórico de preço de custo' : 'Tabela de pedido'
-  const description = mapping.kind === 'historico' ? 'Confirme as colunas que identificam o EAN e o último valor pago.' : 'Confirme o mapeamento antes de importar.'
+  const title = mapping.kind === 'cotacao' ? 'Tabela do fornecedor' : mapping.kind === 'historico' ? 'Histórico de preço de custo' : mapping.kind === 'dcb' ? 'Base de equivalência DCB' : 'Tabela de pedido'
+  const description = mapping.kind === 'historico' ? 'Confirme as colunas que identificam o EAN e o último valor pago.' : mapping.kind === 'dcb' ? 'Confirme as colunas que ligam cada código de barras ao seu princípio ativo e apresentação DCB.' : 'Confirme o mapeamento antes de importar.'
   return <div className="quote-modal-backdrop"><section className="quote-modal quote-mapping"><span className="section-kicker">Revisar importação</span><h2>{title}</h2><p>Encontramos {mapping.rows.length} linhas em <b>{mapping.fileName}</b>. {description}</p><div className="mapping-preview"><table><thead><tr>{mapping.headers.map((header, index) => <th key={index}>{header || `Col. ${index + 1}`}</th>)}</tr></thead><tbody>{mapping.rows.slice(0, 4).map((row, index) => <tr key={index}>{mapping.headers.map((_, column) => <td key={column}>{row[column]}</td>)}</tr>)}</tbody></table></div><div className="mapping-fields">{mapping.fields.map((field) => <label key={field.key}>{field.label}{field.required && ' *'}{field.type === 'text' ? <input value={mapping.values[field.key] ?? ''} onChange={(event) => onChange(field.key, event.target.value)} /> : <select value={mapping.values[field.key] ?? ''} onChange={(event) => onChange(field.key, event.target.value)}><option value="">Não usar</option>{mapping.headers.map((header, index) => <option value={index} key={index}>{header || `Coluna ${index + 1}`}</option>)}</select>}</label>)}</div><div className="quote-modal-actions"><button className="quote-secondary-button" onClick={onCancel}>Cancelar</button><button className="quote-primary-button" onClick={onConfirm}>Importar</button></div></section></div>
 }

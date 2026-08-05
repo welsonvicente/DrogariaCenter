@@ -168,6 +168,14 @@
 .quote-heading h1 { margin-bottom: 8px; color: var(--ink); font-size: clamp(2rem, 8.5vw, 3.3rem); }
 .quote-heading p:last-child { max-width: 590px; margin-bottom: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .quote-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 15px; }
+.quote-dcb-panel { display: flex; flex-direction: column; gap: 11px; margin: 0 0 15px; border: 1px solid #cfe49f; border-radius: 16px; background: linear-gradient(135deg, #f7ffe8, #fff); padding: 13px; }
+.quote-dcb-panel > div:first-child { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.quote-dcb-panel .section-kicker { color: #5b7e04; }
+.quote-dcb-panel b { color: #405b06; font-size: 11px; }
+.quote-dcb-panel small { max-width: 720px; color: #758052; font-size: 9px; line-height: 1.45; }
+.quote-dcb-panel > div:last-child { display: flex; flex-wrap: wrap; gap: 7px; }
+.quote-dcb-upload { display: inline-flex; min-height: 39px; align-items: center; justify-content: center; border: 1px solid #628800; border-radius: 10px; background: #628800; padding: 8px 10px; color: white; font-size: 9.5px; font-weight: 850; white-space: nowrap; box-shadow: 0 7px 15px rgba(98, 136, 0, .14); }
+.quote-dcb-upload input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
 .quote-primary-button, .quote-secondary-button, .quote-danger-button { display: inline-flex; min-height: 43px; align-items: center; justify-content: center; border: 1px solid #ead7da; border-radius: 11px; background: white; padding: 9px 12px; color: var(--brand-red-dark); font-size: 11px; font-weight: 850; white-space: nowrap; }
 .quote-primary-button { border-color: var(--brand-red); background: var(--brand-red); color: white; box-shadow: 0 8px 18px rgba(236, 0, 22, .18); }
 .quote-danger-solid { display: inline-flex; min-height: 43px; align-items: center; justify-content: center; border: 1px solid #ad0014; border-radius: 11px; background: #bd0018; padding: 9px 12px; color: white; font-size: 11px; font-weight: 850; box-shadow: 0 8px 18px rgba(189, 0, 24, .2); }
@@ -285,6 +293,8 @@
 .quote-edit-row:hover { border-color: var(--brand-red); background: var(--brand-red-soft); }
 .quote-status { display: inline-block; border-radius: 999px; padding: 4px 8px; font-size: 9px; font-weight: 850; }
 .quote-status.success { background: #effbd9; color: #568000; }.quote-status.danger { background: #ffe9ec; color: #b30015; }.quote-status.warning { background: #fff4d8; color: #966100; }.quote-status.neutral { background: #f2edef; color: #75666a; }
+.quote-match-badge { display: flex; min-width: 118px; flex-direction: column; align-items: flex-start; gap: 4px; }
+.quote-match-badge small { display: block; max-width: 190px; overflow: hidden; color: #718044; font-size: 7.5px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
 .quote-total { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; border: 1px solid #e5efc7; border-radius: 13px; background: #fbfff3; padding: 11px; color: #536f00; font-size: 10px; }
 .quote-total b { margin-right: auto; font-size: 12px; }.quote-total span { border-radius: 999px; background: white; padding: 5px 7px; }
 .quote-modal-backdrop { position: fixed; z-index: 50; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(47, 14, 20, .46); padding: 15px; backdrop-filter: blur(4px); }
@@ -319,6 +329,8 @@
 .quote-signature b { color: #4f631a; font-size: 9.5px; line-height: 1.4; }
 .quote-signature.compact { margin-top: 9px; border-color: #eee3e5; background: #fffafb; padding: 7px 9px; }
 .quote-signature.compact b { color: #6b575c; font-size: 8.5px; }
+.quote-dcb-signature, .quote-dcb-signature.compact { border-color: #cfe49f; background: #f8ffe9; }
+.quote-dcb-signature small, .quote-dcb-signature b, .quote-dcb-signature.compact b { color: #587407; }
 .quote-match-search { margin-top: 13px; }
 .quote-match-list { display: grid; gap: 8px; max-height: 440px; overflow: auto; margin-top: 12px; padding: 1px; }
 .quote-match-card { border: 1px solid #eadbdd; border-radius: 14px; background: white; padding: 11px; }
@@ -331,6 +343,19 @@
 .quote-match-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .quote-match-meta span, .quote-match-meta em { border-radius: 999px; background: #f1f7e4; padding: 4px 7px; color: #5d790e; font-size: 8px; font-style: normal; font-weight: 800; }
 .quote-match-meta em { background: #ffecef; color: #ae0014; }
+.quote-match-meta em.review { background: #fff3d6; color: #936000; }
+.quote-auto-match-setting { display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; border: 1px solid #dcebb8; border-radius: 16px; background: linear-gradient(135deg, #fbfff2, #fff); padding: 14px; }
+.quote-auto-match-setting > div { display: flex; flex-direction: column; gap: 3px; }
+.quote-auto-match-setting .section-kicker { margin-bottom: 1px; color: #5b7d08; }
+.quote-auto-match-setting b { color: #344908; font-size: 12px; }
+.quote-auto-match-setting small { max-width: 720px; color: #72804f; font-size: 9.5px; line-height: 1.45; }
+.quote-switch { display: flex; align-items: center; gap: 8px; color: #526a19; font-size: 10px; font-weight: 850; cursor: pointer; }
+.quote-switch input { position: absolute; opacity: 0; pointer-events: none; }
+.quote-switch > span { position: relative; width: 42px; height: 24px; border-radius: 999px; background: #d6d0d2; transition: background .2s ease; }
+.quote-switch > span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: white; box-shadow: 0 2px 6px rgba(0,0,0,.18); transition: transform .2s ease; }
+.quote-switch input:checked + span { background: #82b311; }
+.quote-switch input:checked + span::after { transform: translateX(18px); }
+.quote-auto-filter { border-color: #d9e9b3; background: #f7ffe8; color: #557800; }
 .quote-match-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; margin-top: 9px; }
 .quote-match-actions .quote-primary-button, .quote-match-actions .quote-secondary-button, .quote-match-actions .quote-danger-button { min-height: 35px; padding: 6px 9px; font-size: 8.5px; }
 .quote-match-locked { margin-right: auto; color: #5c7d08; font-size: 8.5px; font-weight: 800; }.quote-match-locked.danger { color: #b30015; }
@@ -487,6 +512,7 @@
 .app-footer img { width: 135px; height: auto; }
 
 @media (min-width: 640px) {
+  .quote-auto-match-setting { flex-direction: row; align-items: center; justify-content: space-between; }
   .table-meta { flex-direction: row; align-items: center; justify-content: space-between; }
   .analyst-review-toolbar { flex-direction: row; align-items: center; justify-content: space-between; }
   .analyst-review-copy { max-width: 620px; }
@@ -513,6 +539,8 @@
   .purchase-export > div:last-child { width: min(100%, 370px); }
   .quote-history-panel { flex-direction: row; align-items: center; justify-content: space-between; }
   .quote-history-panel > div:last-child { justify-content: flex-end; }
+  .quote-dcb-panel { flex-direction: row; align-items: center; justify-content: space-between; }
+  .quote-dcb-panel > div:last-child { justify-content: flex-end; }
   .poster-live { margin-bottom: 4px; }
   .download-actions { grid-template-columns: repeat(3, 1fr); }
   .batch-studio .download-actions { grid-template-columns: repeat(2, 1fr); }

@@ -46,7 +46,9 @@ export function matchesProductSearch(product, query) {
 export function toNumber(value) {
   if (value === undefined || value === null || value === '') return null
   if (typeof value === 'number') return value
-  let text = String(value).trim().replace(/[^\d,.-]/g, '')
+  let source = String(value).trim().toUpperCase()
+  if (/^[\d\s.,-]*G[\d\s.,G-]*$/.test(source)) source = source.replace(/G/g, '9')
+  let text = source.replace(/[^\d,.-]/g, '')
   if (!text) return null
   if (text.includes(',') && text.includes('.')) text = text.replace(/\./g, '').replace(',', '.')
   else if (text.includes(',')) text = text.replace(',', '.')
@@ -81,15 +83,19 @@ const columnPatterns = {
   codigo: ['CODIGO', 'COD', 'COD REDUZIDO', 'REFERENCIA', 'REF', 'ITEM', 'COD FAT'],
   nome: ['NOME', 'DESCRICAO', 'PRODUTO', 'MEDICAMENTO', 'NOME DO PRODUTO', 'DESC'],
   quantidade: ['QUANTIDADE', 'QTD', 'QTDE', 'QTD PEDIDA', 'QUANT'],
-  precoUnit: ['PRECO UNITARIO', 'PRECO UNIT', 'VALOR UNITARIO', 'PRECO C DESCONTO SEM ST', 'PRECO COM DESCONTO', 'PRECO', 'VALOR', 'PU'],
+  precoUnit: ['PRECO UNITARIO', 'PRECO UNIT', 'VALOR UNITARIO', 'LIQ S ST', 'LIQ SEM ST', 'LIQUIDO S ST', 'LIQUIDO SEM ST', 'PRECO C DESCONTO SEM ST', 'PRECO COM DESCONTO', 'PRECO', 'VALOR', 'PU'],
   precoCusto: ['P. CUSTO', 'P CUSTO', 'PRECO DE CUSTO', 'PRECO CUSTO', 'CUSTO UNITARIO', 'VALOR ULT ENTRADA', 'ULTIMO CUSTO'],
-  fornecedor: ['FORNECEDOR', 'FABRICANTE', 'LABORATORIO', 'LAB', 'MARCA', 'FORNECEDOR PREFERIDO'],
+  dcb: ['DCB', 'DENOMINACAO COMUM BRASILEIRA', 'PRINCIPIO ATIVO DCB'],
+  laboratorio: ['LABORATORIO', 'LAB', 'FABRICANTE', 'MARCA'],
+  fornecedor: ['FORNECEDOR PREFERIDO', 'FORNECEDOR ESCOLHIDO', 'DISTRIBUIDOR PREFERIDO'],
 }
 
 function matchColumn(headers, patterns) {
-  const normalized = headers.map(normalizeHeader)
-  for (const pattern of patterns) { const index = normalized.findIndex((header) => header === pattern); if (index >= 0) return index }
-  for (const pattern of patterns) { const index = normalized.findIndex((header) => header && (header.includes(pattern) || pattern.includes(header))); if (index >= 0) return index }
+  const normalizeColumnLabel = (value) => normalizeHeader(value).replace(/[^A-Z0-9]+/g, ' ').trim()
+  const normalized = headers.map(normalizeColumnLabel)
+  const normalizedPatterns = patterns.map(normalizeColumnLabel)
+  for (const pattern of normalizedPatterns) { const index = normalized.findIndex((header) => header === pattern); if (index >= 0) return index }
+  for (const pattern of normalizedPatterns) { const index = normalized.findIndex((header) => header && header.includes(pattern)); if (index >= 0) return index }
   return -1
 }
 
@@ -134,7 +140,10 @@ export function ensureOrderLineIds(pedido) {
 }
 
 export function normalizeEan(value) {
-  return String(value ?? '').replace(/\D/g, '')
+  let source = String(value ?? '').trim().toUpperCase()
+  const compact = source.replace(/[^A-Z0-9]/g, '')
+  if (compact.includes('G') && /^[0-9G]+$/.test(compact)) source = compact.replace(/G/g, '9')
+  return source.replace(/\D/g, '')
 }
 
 export function parsePriceHistory(rows, { eanIndex, nameIndex = null, costIndex, laboratoryIndex = null }) {
@@ -156,6 +165,38 @@ export function parsePriceHistory(rows, { eanIndex, nameIndex = null, costIndex,
   })
 
   return { history, invalid, duplicates }
+}
+
+export function normalizeDcbKey(value) {
+  return normalizeHeader(value)
+    .replace(/(\d),(\d)/g, '$1.$2')
+    .replace(/[^A-Z0-9.+/%]+/g, '')
+}
+
+export function parseDcbCatalog(rows, { eanIndex, dcbIndex }) {
+  const catalog = {}
+  const conflictingEans = new Set()
+  let invalid = 0
+  let duplicates = 0
+
+  rows.forEach((row) => {
+    const ean = normalizeEan(row[eanIndex])
+    const label = String(row[dcbIndex] || '').trim()
+    const key = normalizeDcbKey(label)
+    if (!ean || !key) { invalid += 1; return }
+    if (conflictingEans.has(ean)) return
+    if (catalog[ean]) {
+      duplicates += 1
+      if (catalog[ean].key !== key) {
+        delete catalog[ean]
+        conflictingEans.add(ean)
+      }
+      return
+    }
+    catalog[ean] = { key, label }
+  })
+
+  return { catalog, invalid, duplicates, conflicts: conflictingEans.size }
 }
 
 export function evaluatePriceOpportunity(currentPrice, lastCost) {
@@ -229,6 +270,7 @@ export function buildProductSignature(name, supplier = '') {
   const packMatch = packPatterns.map((pattern) => text.match(pattern)).find(Boolean)
   const pack = packMatch ? Number(packMatch[1]) : null
   const form = FORM_ALIASES.find(([, pattern]) => pattern.test(text))?.[0] || null
+  const release = /\b(LP|XR|ER|RETARD|PROLONGAD[AO]S?)\b|\bLIBERACAO\s+PROLONGADA\b/.test(text) ? 'extended' : 'immediate'
   const doseTokens = uniqueSorted([...text.matchAll(/(\d+(?:\.\d+)?)\s*(MCG|MG|G|UI|MUI|%)(?:\s*\/\s*(ML|G|DOSE))?/g)].map((match) => `${Number(match[1])}${match[2]}${match[3] ? `/${match[3]}` : ''}`))
   const sizeTokens = uniqueSorted([...text.matchAll(/(\d+(?:\.\d+)?)\s*(ML|G)\b/g)].map((match) => `${Number(match[1])}${match[2]}`).filter((token) => !doseTokens.includes(token)))
   const supplierTokens = new Set(normalizeProductName(supplier).split(' ').filter(Boolean))
@@ -243,18 +285,21 @@ export function buildProductSignature(name, supplier = '') {
   const associations = uniqueSorted(ingredientTokens.filter((token) => token === 'HCTZ'))
   const presentation = pack !== null ? `PACK:${pack}` : sizeTokens.length ? `SIZE:${sizeTokens.join('+')}` : ''
   const key = [ingredientTokens.join('+'), doseTokens.join('+'), form || '', presentation].join('|')
-  return { normalized: text, ingredientTokens, associations, doseTokens, sizeTokens, form, pack, presentation, key }
+  return { normalized: text, ingredientTokens, associations, doseTokens, sizeTokens, form, release, pack, presentation, key }
 }
 
 export function compareProductNames(orderName, candidateName, candidateSupplier = '') {
   const order = buildProductSignature(orderName)
   const candidate = buildProductSignature(candidateName, candidateSupplier)
   const conflicts = []
+  const solidOralForms = new Set(['tablet', 'capsule'])
+  const reviewableSolidOralDifference = Boolean(order.form && candidate.form && order.form !== candidate.form && solidOralForms.has(order.form) && solidOralForms.has(candidate.form))
   if (order.doseTokens.length && candidate.doseTokens.length && !sameValues(order.doseTokens, candidate.doseTokens)) conflicts.push('dosagem')
-  if (order.form && candidate.form && order.form !== candidate.form) conflicts.push('forma')
+  if (order.form && candidate.form && order.form !== candidate.form && !reviewableSolidOralDifference) conflicts.push('forma')
   if (order.pack !== null && candidate.pack !== null && order.pack !== candidate.pack) conflicts.push('embalagem')
   if (order.sizeTokens.length && candidate.sizeTokens.length && !sameValues(order.sizeTokens, candidate.sizeTokens)) conflicts.push('volume')
   if (!sameValues(order.associations, candidate.associations)) conflicts.push('associação')
+  if (order.release !== candidate.release) conflicts.push('liberação')
   const ingredientSimilarity = diceScore(order.ingredientTokens, candidate.ingredientTokens)
   const doseMatch = order.doseTokens.length > 0 && candidate.doseTokens.length > 0 && sameValues(order.doseTokens, candidate.doseTokens)
   const formMatch = Boolean(order.form && candidate.form && order.form === candidate.form)
@@ -262,10 +307,13 @@ export function compareProductNames(orderName, candidateName, candidateSupplier 
   const score = Math.round((ingredientSimilarity * .6 + (doseMatch ? .2 : 0) + (formMatch ? .1 : 0) + (presentationMatch ? .1 : 0)) * 100)
   const automatic = !conflicts.length && ingredientSimilarity >= .85 && doseMatch && formMatch && presentationMatch
   const suggestion = !conflicts.length && !automatic && ingredientSimilarity >= .55 && (doseMatch || formMatch || presentationMatch)
+  const safeToAutoAccept = !conflicts.length && ingredientSimilarity >= .85 && doseMatch && presentationMatch && (formMatch || reviewableSolidOralDifference)
   return {
     status: conflicts.length ? 'conflict' : automatic ? 'automatic' : suggestion ? 'suggestion' : 'possible',
     score,
     conflicts,
+    reviewReasons: reviewableSolidOralDifference ? ['cápsula versus comprimido'] : [],
+    safeToAutoAccept,
     order,
     candidate,
   }
@@ -280,19 +328,24 @@ export function createOfferKey(supplier, sourceEan) {
   return `${normalizeHeader(supplier)}|${normalizeEan(sourceEan)}`
 }
 
-export function findProductMatches(cotacoes, item, productLinks = {}) {
+export function findProductMatches(cotacoes, item, productLinks = {}, matchingOptions = {}, dcbCatalog = {}) {
   const matchedProducts = []
   const suggestions = []
+  const orderDcb = dcbCatalog[normalizeEan(item.ean)] || null
   Object.values(cotacoes).forEach((candidate) => {
     const exact = Boolean(item.ean && candidate.ean === item.ean)
     const linkState = productLinks[productLinkId(item, candidate.ean)]
+    const candidateDcb = dcbCatalog[normalizeEan(candidate.ean)] || null
+    const sameDcb = Boolean(orderDcb?.key && candidateDcb?.key && orderDcb.key === candidateDcb.key)
     const comparison = exact ? null : compareProductNames(item.nome, candidate.nome, candidate.ofertas[0]?.fornecedor || '')
     let method = null
     if (exact) method = 'ean'
+    else if (linkState !== 'rejected' && sameDcb) method = 'dcb'
     else if (linkState === 'approved') method = 'confirmed-name'
     else if (linkState !== 'rejected' && comparison.status === 'automatic') method = 'automatic-name'
+    else if (linkState !== 'rejected' && matchingOptions.autoAcceptSafe && comparison.status === 'suggestion' && comparison.safeToAutoAccept) method = 'auto-reviewed-name'
     if (method) {
-      matchedProducts.push({ ...candidate, method, score: exact ? 100 : comparison?.score || 100, comparison })
+      matchedProducts.push({ ...candidate, method, score: exact || sameDcb ? 100 : comparison?.score || 100, comparison, dcb: candidateDcb?.label || '' })
     } else if (linkState !== 'rejected' && comparison?.status === 'suggestion') {
       suggestions.push({ ...candidate, method: 'suggestion', score: comparison.score, comparison })
     }
@@ -300,18 +353,19 @@ export function findProductMatches(cotacoes, item, productLinks = {}) {
 
   const offersByKey = new Map()
   matchedProducts.forEach((product) => product.ofertas.forEach((offer) => {
-    const enriched = { ...offer, offerKey: createOfferKey(offer.fornecedor, product.ean), eanOferta: product.ean, nomeOferta: product.nome, matchMethod: product.method, matchScore: product.score }
+    if (!Number.isFinite(offer.precoUnitario) || offer.precoUnitario <= 0) return
+    const enriched = { ...offer, offerKey: createOfferKey(offer.fornecedor, product.ean), eanOferta: product.ean, nomeOferta: product.nome, dcbOferta: product.dcb || '', matchMethod: product.method, matchScore: product.score }
     const existing = offersByKey.get(enriched.offerKey)
     if (!existing || enriched.precoUnitario < existing.precoUnitario) offersByKey.set(enriched.offerKey, enriched)
   }))
   const offers = [...offersByKey.values()].sort((first, second) => first.precoUnitario - second.precoUnitario)
   suggestions.sort((first, second) => second.score - first.score)
-  return { offers, matchedProducts, suggestions }
+  return { offers, matchedProducts, suggestions, orderDcb }
 }
 
-export function calculateOrder(cotacoes, pedido, ajustesManuais = {}, productLinks = {}) {
+export function calculateOrder(cotacoes, pedido, ajustesManuais = {}, productLinks = {}, matchingOptions = {}, dcbCatalog = {}) {
   return pedido.map((item) => {
-    const { offers, matchedProducts, suggestions } = findProductMatches(cotacoes, item, productLinks)
+    const { offers, matchedProducts, suggestions, orderDcb } = findProductMatches(cotacoes, item, productLinks, matchingOptions, dcbCatalog)
     const ajuste = ajustesManuais[item.id]
     const quantidadeOriginal = item.quantidadePedida
     const adjustedQuantity = Number(ajuste?.quantidade)
@@ -322,12 +376,13 @@ export function calculateOrder(cotacoes, pedido, ajustesManuais = {}, productLin
       : []
     const melhorOfertaNome = ofertasNomeMaisBaratas[0] || null
     const economiaNomeUnitario = melhorOfertaNome && melhorOfertaEanExato ? melhorOfertaEanExato.precoUnitario - melhorOfertaNome.precoUnitario : 0
-    const base = { ...item, quantidadeOriginal, quantidadeFinal, ajusteManual: Boolean(ajuste), motivoAjuste: ajuste?.motivo || '', ofertasDisponiveis: offers, produtosCorrespondentes: matchedProducts, sugestoesCorrespondencia: suggestions, melhorOfertaEanExato, melhorOfertaNome, ofertasNomeMaisBaratas, temOfertaNomeMaisBarata: ofertasNomeMaisBaratas.length > 0, economiaNomeUnitario, economiaNomeTotal: economiaNomeUnitario * quantidadeFinal }
+    const base = { ...item, dcb: orderDcb?.label || '', quantidadeOriginal, quantidadeFinal, ajusteManual: Boolean(ajuste), motivoAjuste: ajuste?.motivo || '', ofertasDisponiveis: offers, produtosCorrespondentes: matchedProducts, sugestoesCorrespondencia: suggestions, melhorOfertaEanExato, melhorOfertaNome, ofertasNomeMaisBaratas, temOfertaNomeMaisBarata: ofertasNomeMaisBaratas.length > 0, economiaNomeUnitario, economiaNomeTotal: economiaNomeUnitario * quantidadeFinal }
     if (!offers.length) return { ...base, fornecedorSelecionado: null, fornecedorAutomatico: null, eanOferta: null, nomeOferta: null, matchMethod: null, matchScore: null, precoUnitario: null, precoAutomatico: null, precoTotal: null, precoTotalAutomatico: null, impactoAjuste: 0, status: suggestions.length ? 'revisarCorrespondencia' : 'naoEncontrado' }
     const best = offers[0]
-    const preferredOffers = item.fornecedorPreferido ? offers.filter((offer) => normalizeHeader(offer.fornecedor) === normalizeHeader(item.fornecedorPreferido)) : []
+    const hasActivePreference = Boolean(item.preferenciaFornecedorAtiva && item.fornecedorPreferido)
+    const preferredOffers = hasActivePreference ? offers.filter((offer) => normalizeHeader(offer.fornecedor) === normalizeHeader(item.fornecedorPreferido)) : []
     const preferred = preferredOffers[0]
-    const automatic = item.fornecedorPreferido ? preferred : best
+    const automatic = preferred || best
     const supplierMatches = ajuste?.fornecedor ? offers.filter((offer) => normalizeHeader(offer.fornecedor) === normalizeHeader(ajuste.fornecedor)) : []
     const manual = ajuste?.eanOferta ? supplierMatches.find((offer) => offer.eanOferta === ajuste.eanOferta) : supplierMatches[0]
     if (ajuste && !manual) return { ...base, fornecedorSelecionado: ajuste.fornecedor, fornecedorAutomatico: automatic?.fornecedor || null, eanOferta: ajuste.eanOferta || null, nomeOferta: null, matchMethod: null, matchScore: null, precoUnitario: null, precoAutomatico: automatic?.precoUnitario ?? null, precoTotal: null, precoTotalAutomatico: automatic ? automatic.precoUnitario * quantidadeOriginal : null, impactoAjuste: 0, status: 'ajusteInvalido' }
@@ -336,7 +391,7 @@ export function calculateOrder(cotacoes, pedido, ajustesManuais = {}, productLin
     const precoTotal = selected.precoUnitario * quantidadeFinal
     const precoTotalAutomatico = automatic ? automatic.precoUnitario * quantidadeOriginal : null
     const status = ajuste ? (quantidadeFinal === 0 ? 'removidoManual' : 'ajusteManual') : selected.offerKey === best.offerKey ? 'selecionado' : 'alternativaPreferida'
-    return { ...base, fornecedorSelecionado: selected.fornecedor, fornecedorAutomatico: automatic?.fornecedor || null, eanOferta: selected.eanOferta, nomeOferta: selected.nomeOferta, eanOfertaAutomatico: automatic?.eanOferta || null, matchMethod: selected.matchMethod, matchScore: selected.matchScore, offerKey: selected.offerKey, precoUnitario: selected.precoUnitario, precoAutomatico: automatic?.precoUnitario ?? null, menorPreco: best.precoUnitario, precoTotal, precoTotalAutomatico, impactoAjuste: ajuste && precoTotalAutomatico !== null ? precoTotal - precoTotalAutomatico : 0, status }
+    return { ...base, fornecedorSelecionado: selected.fornecedor, fornecedorAutomatico: automatic?.fornecedor || null, eanOferta: selected.eanOferta, nomeOferta: selected.nomeOferta, dcbOferta: selected.dcbOferta || '', eanOfertaAutomatico: automatic?.eanOferta || null, matchMethod: selected.matchMethod, matchScore: selected.matchScore, offerKey: selected.offerKey, precoUnitario: selected.precoUnitario, precoAutomatico: automatic?.precoUnitario ?? null, menorPreco: best.precoUnitario, precoTotal, precoTotalAutomatico, impactoAjuste: ajuste && precoTotalAutomatico !== null ? precoTotal - precoTotalAutomatico : 0, status }
   })
 }
 
