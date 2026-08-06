@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import CotacaoScreen from './CotacaoScreen.jsx'
 import {
-  extractPdfLines, formatMoney, operatorName, parseCieloLines, parsePagPixLines,
+  extractPdfLines, findHighDiscountSales, formatMoney, operatorName, parseCieloLines, parseFechamentoLines, parsePagPixLines,
   parsePagPixSpreadsheet, parseTrierLines, parseTrierSpreadsheet, reconcile, STATUS_LABEL,
 } from './reconciliation.js'
 
@@ -199,6 +199,30 @@ function SalesTable({ rows, markers = {}, onToggleMarker, onSetMarkers, markerKi
   </tbody></Table></>
 }
 
+function DiscountAuditTable({ rows }) {
+  const [filters, setFilters] = useState({})
+  const columns = [
+    { key: 'sale', label: 'Nº venda', value: (sale) => sale.numero },
+    { key: 'date', label: 'Data', value: (sale) => sale.data },
+    { key: 'time', label: 'Hora', value: (sale) => sale.hora || '—' },
+    { key: 'operator', label: 'Operador', value: (sale) => operatorName(sale.operador) },
+    { key: 'method', label: 'Forma', value: (sale) => sale.forma || '—' },
+    { key: 'channel', label: 'Delivery/Balcão', value: (sale) => sale.tele === 'Sim' ? 'Delivery' : 'Balcão' },
+    { key: 'gross', label: 'Valor bruto', value: (sale) => formatMoney(sale.valorBruto) },
+    { key: 'discountPercent', label: 'Desconto %', value: (sale) => `${Number(sale.descontoPercentual || 0).toFixed(2).replace('.', ',')}%`, render: (sale) => <strong className="discount-high-percent">{Number(sale.descontoPercentual || 0).toFixed(2).replace('.', ',')}%</strong> },
+    { key: 'discountValue', label: 'Desconto R$', value: (sale) => formatMoney(sale.descontoValor), render: (sale) => <strong className="discount-high-value">{formatMoney(sale.descontoValor)}</strong> },
+    { key: 'liquid', label: 'Valor líquido', value: (sale) => formatMoney(sale.valorLiquido) },
+    { key: 'total', label: 'Total líquido', value: (sale) => formatMoney(sale.valor) },
+  ]
+  const { orderedColumns, moveColumn, shiftColumn } = useReorderableColumns(columns, 'drogaria-center:trier:discount-column-order:v1')
+  const filteredRows = columnFilter(rows, columns, filters)
+  if (!rows.length) return <EmptyTable />
+  return <><div className="table-meta"><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} venda(s) com desconto alto.</div><div className="column-order-hint no-print">⠿ Arraste uma coluna ou use as setas para reorganizar</div></div><Table><thead><tr>{orderedColumns.map((column, index) => <ReorderableColumnHeader key={column.key} column={column} index={index} total={orderedColumns.length} onMove={moveColumn} onShift={shiftColumn} />)}</tr><FilterRow tableId="discount-filter" columns={orderedColumns} rows={rows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
+    {filteredRows.map((sale) => <tr className="discount-high-row" key={`${sale.numero}-${sale.data}-${sale.hora}`}>{orderedColumns.map((column) => <td key={column.key}>{column.render ? column.render(sale) : column.value(sale)}</td>)}</tr>)}
+    {!filteredRows.length && <tr className="empty-row"><td colSpan={orderedColumns.length}>Nenhum registro corresponde aos filtros.</td></tr>}
+  </tbody></Table></>
+}
+
 function NoSaleTable({ rows, markers = {}, onToggleMarker, onSetMarkers, markerKind }) {
   const [filters, setFilters] = useState({})
   const [reviewFilter, setReviewFilter] = useState('all')
@@ -210,15 +234,15 @@ function NoSaleTable({ rows, markers = {}, onToggleMarker, onSetMarkers, markerK
     { key: 'type', label: 'Tipo/Bandeira', value: (row) => row.tipo || row.bandeira || '—' },
     { key: 'value', label: 'Valor', value: (row) => formatMoney(row.valor) },
     { key: 'status', label: 'Status', value: (row) => STATUS_LABEL[row.status], render: (row) => <StatusPill status={row.status} /> },
-    { key: 'analysis', label: 'Análise', filterable: false, value: () => '', render: (row) => <AnalystMarker marker={markers[row.__markerKey]} onToggle={() => onToggleMarker(row.__markerKey)} /> },
+    ...(markerKind ? [{ key: 'analysis', label: 'Análise', filterable: false, value: () => '', render: (row) => <AnalystMarker marker={markers[row.__markerKey]} onToggle={() => onToggleMarker(row.__markerKey)} /> }] : []),
   ]
   const { orderedColumns, moveColumn, shiftColumn } = useReorderableColumns(columns, 'drogaria-center:trier:no-sale-column-order:v1')
   const keyedRows = rowsWithMarkerKeys(rows, markerKind)
   const columnFilteredRows = columnFilter(keyedRows, columns, filters)
-  const filteredRows = columnFilteredRows.filter((row) => reviewFilter === 'all' || (reviewFilter === 'marked') === Boolean(markers[row.__markerKey]))
+  const filteredRows = markerKind ? columnFilteredRows.filter((row) => reviewFilter === 'all' || (reviewFilter === 'marked') === Boolean(markers[row.__markerKey])) : columnFilteredRows
   if (!rows.length) return <EmptyTable />
-  return <><ReviewToolbar rows={keyedRows} markers={markers} reviewFilter={reviewFilter} onReviewFilter={setReviewFilter} onSetAll={onSetMarkers} /><div className="table-meta"><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} registro(s).</div><div className="column-order-hint no-print">⠿ Arraste uma coluna ou use as setas para reorganizar</div></div><Table><thead><tr>{orderedColumns.map((column, index) => <ReorderableColumnHeader key={column.key} column={column} index={index} total={orderedColumns.length} onMove={moveColumn} onShift={shiftColumn} />)}</tr><FilterRow tableId="no-sale-filter" columns={orderedColumns} rows={keyedRows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
-    {filteredRows.map((row) => { const marker = markers[row.__markerKey]; return <tr className={marker ? 'manually-reconciled' : ''} key={row.__markerKey}>{orderedColumns.map((column) => <td key={column.key}>{column.render ? column.render(row) : column.value(row)}</td>)}</tr> })}
+  return <>{markerKind && <ReviewToolbar rows={keyedRows} markers={markers} reviewFilter={reviewFilter} onReviewFilter={setReviewFilter} onSetAll={onSetMarkers} />}<div className="table-meta"><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} registro(s).</div><div className="column-order-hint no-print">⠿ Arraste uma coluna ou use as setas para reorganizar</div></div><Table><thead><tr>{orderedColumns.map((column, index) => <ReorderableColumnHeader key={column.key} column={column} index={index} total={orderedColumns.length} onMove={moveColumn} onShift={shiftColumn} />)}</tr><FilterRow tableId="no-sale-filter" columns={orderedColumns} rows={keyedRows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
+    {filteredRows.map((row, index) => { const marker = markers[row.__markerKey]; return <tr className={marker ? 'manually-reconciled' : ''} key={row.__markerKey || `${row.fonte}-${row.data}-${row.hora}-${row.valor}-${index}`}>{orderedColumns.map((column) => <td key={column.key}>{column.render ? column.render(row) : column.value(row)}</td>)}</tr> })}
     {!filteredRows.length && <tr className="empty-row"><td colSpan={orderedColumns.length}>Nenhum registro corresponde aos filtros.</td></tr>}
   </tbody></Table></>
 }
@@ -226,15 +250,24 @@ function NoSaleTable({ rows, markers = {}, onToggleMarker, onSetMarkers, markerK
 function Table({ children }) { return <div className="table-frame"><div className="table-scroll"><table>{children}</table></div></div> }
 function EmptyTable() { return <div className="table-frame p-7 text-center text-sm text-muted">Nada nessa categoria.</div> }
 
+function ClosingCreditSummary({ groups }) {
+  if (!groups.length) return null
+  return <div className="closing-credit-groups">{groups.map((group, index) => <article key={`${group.data}-${group.valor}-${index}`} className={group.conciliado ? 'matched' : 'pending'}><div><span>{group.conciliado ? '✓ Conciliado pelo fechamento' : '! Valor ainda não localizado'}</span><strong>Contas recebidas crediário (Cartão)</strong><small>Fechamento de {group.data}</small></div><dl><div><dt>Informado</dt><dd>{formatMoney(group.valor)}</dd></div><div><dt>Encontrado na Cielo</dt><dd>{formatMoney(group.totalEncontrado)}</dd></div><div><dt>Recebimentos</dt><dd>{group.quantidadeRecebimentos}</dd></div><div><dt>Diferença</dt><dd>{formatMoney(group.diff)}</dd></div></dl></article>)}</div>
+}
+
 function exportRows(output, markers = {}) {
   const sales = rowsWithMarkerKeys(output.results, 'sem_recebimento')
   const receipts = rowsWithMarkerKeys(output.semVenda, 'sem_venda')
+  const closingReceipts = output.crediarioCartao ?? []
   return [
     ...sales.map((row) => ({
       'Número da venda': row.sale.numero, Data: row.sale.data, 'Hora da venda': row.sale.hora || '', Operador: operatorName(row.sale.operador), 'Forma de pagamento': row.sale.forma || '', 'Delivery/Balcão': row.sale.tele === 'Sim' ? 'Delivery' : 'Balcão', 'Valor da venda': row.sale.valor, 'Valor recebido': row.recebimento?.valor ?? '', Origem: row.fonte || '', 'Hora do recebimento': row.recebimento?.hora || '', 'Diferença de valor': row.diff ?? '', Status: STATUS_LABEL[row.status], 'Revisão do analista': row.status === 'SEM_RECEBIMENTO' ? (markers[row.__markerKey] ? 'Conciliado pelo analista' : 'Pendente') : '', 'Data da revisão': markers[row.__markerKey]?.markedAt ? new Date(markers[row.__markerKey].markedAt).toLocaleString('pt-BR') : '',
     })),
     ...receipts.map((row) => ({
       'Número da venda': '', Data: row.data, 'Hora da venda': '', Operador: operatorName(row.operador), 'Forma de pagamento': '', 'Delivery/Balcão': row.tipo || row.bandeira || '', 'Valor da venda': '', 'Valor recebido': row.valor, Origem: row.fonte, 'Hora do recebimento': row.hora || '', 'Diferença de valor': '', Status: STATUS_LABEL[row.status], 'Revisão do analista': markers[row.__markerKey] ? 'Conciliado pelo analista' : 'Pendente', 'Data da revisão': markers[row.__markerKey]?.markedAt ? new Date(markers[row.__markerKey].markedAt).toLocaleString('pt-BR') : '',
+    })),
+    ...closingReceipts.map((row) => ({
+      'Número da venda': '', Data: row.data, 'Hora da venda': '', Operador: operatorName(row.operador), 'Forma de pagamento': '', 'Delivery/Balcão': row.tipo || row.bandeira || '', 'Valor da venda': '', 'Valor recebido': row.valor, Origem: 'Cielo / Fechamento de Caixa', 'Hora do recebimento': row.hora || '', 'Diferença de valor': '', Status: STATUS_LABEL[row.status], 'Revisão do analista': '', 'Data da revisão': '',
     })),
   ]
 }
@@ -614,6 +647,10 @@ export default function App() {
   const [tab, setTab] = useState('resumo')
   const [error, setError] = useState('')
   const [analystMarkers, setAnalystMarkers] = useState(loadAnalystMarkers)
+  const [discountMode, setDiscountMode] = useState('percent')
+  const [discountPercentThreshold, setDiscountPercentThreshold] = useState(30)
+  const [discountValueThreshold, setDiscountValueThreshold] = useState(20)
+  const [discountAudit, setDiscountAudit] = useState(null)
   const canRun = files.trier && (files.pagpix || files.cielo)
 
   useEffect(() => {
@@ -652,9 +689,10 @@ export default function App() {
         ? await parsePagPixSpreadsheet(file)
         : isTrierSpreadsheet ? await parseTrierSpreadsheet(file) : null
       const lines = spreadsheetRows ? spreadsheetRows.map((row) => row.raw) : await extractPdfLines(file)
-      const rows = spreadsheetRows ?? (key === 'trier' ? parseTrierLines(lines) : key === 'pagpix' ? parsePagPixLines(lines) : key === 'cielo' ? parseCieloLines(lines) : [])
+      const rows = spreadsheetRows ?? (key === 'trier' ? parseTrierLines(lines) : key === 'pagpix' ? parsePagPixLines(lines) : key === 'cielo' ? parseCieloLines(lines) : key === 'fechamento' ? parseFechamentoLines(lines) : [])
       setFiles((previous) => ({ ...previous, [key]: { fileName: file.name, lines, rows } }))
       setOutput(null)
+      if (key === 'trier') setDiscountAudit(null)
       if (!lines.length) setError(`Não consegui extrair nenhum texto de “${file.name}”. Se for um PDF escaneado (imagem), será necessário OCR.`)
       else if (key !== 'fechamento' && !rows.length) setError(`Li ${lines.length} linhas de “${file.name}”, mas não reconheci registros no formato esperado. Abra “Ver linhas extraídas” para revisar o conteúdo.`)
     } catch (exception) { setError(`Não consegui ler “${file.name}”. Confira se é um PDF válido e contém texto. Detalhe: ${exception.message || exception}`) }
@@ -666,7 +704,15 @@ export default function App() {
     catch (exception) { setOutput(null); setError(exception.message) }
   }
 
-  const results = output?.results ?? []; const noSale = output?.semVenda ?? []
+  function runDiscountAudit() {
+    const threshold = discountMode === 'value' ? Number(discountValueThreshold) : Number(discountPercentThreshold)
+    if (!files.trier?.rows?.length) { setError('Importe a Relação de Vendas Trier antes de verificar os descontos.'); return }
+    if (!Number.isFinite(threshold) || threshold < 0) { setError('Informe um limite de desconto válido, igual ou maior que zero.'); return }
+    setError('')
+    setDiscountAudit({ mode: discountMode, threshold })
+  }
+
+  const results = output?.results ?? []; const noSale = output?.semVenda ?? []; const crediarioCartao = output?.crediarioCartao ?? []; const fechamentoCrediario = output?.fechamentoCrediario ?? []
   const accounting = results.filter((row) => row.status !== 'DEVOLUCAO')
   const counts = {
     total: accounting.length, pix: accounting.filter((row) => row.sale.forma === 'PIX').length, card: accounting.filter((row) => row.sale.forma === 'CARTAO').length, reconciled: accounting.filter((row) => row.status === 'CONCILIADA').length, missing: accounting.filter((row) => row.status === 'SEM_RECEBIMENTO').length, divergent: accounting.filter((row) => row.status === 'DIVERGENCIA').length, pixNoSale: noSale.filter((row) => row.fonte === 'PaggPix').length, cardNoSale: noSale.filter((row) => row.fonte === 'Cielo').length, duplicates: noSale.filter((row) => row.status === 'DUPLICADO').length, returns: results.filter((row) => row.status === 'DEVOLUCAO').length,
@@ -674,8 +720,11 @@ export default function App() {
   const totalValue = accounting.reduce((sum, row) => sum + row.sale.valor, 0)
   const matchedValue = accounting.filter((row) => ['CONCILIADA', 'DIVERGENCIA'].includes(row.status)).reduce((sum, row) => sum + row.sale.valor, 0)
   const divergentValue = accounting.filter((row) => row.status === 'DIVERGENCIA').reduce((sum, row) => sum + Math.abs(row.diff), 0)
-  const kpis = [['Total de vendas', counts.total], ['Vendas PIX', counts.pix], ['Vendas cartão', counts.card], ['Conciliadas', counts.reconciled], ['Não conciliadas', counts.missing], ['PIX sem venda', counts.pixNoSale], ['Cartão sem venda', counts.cardNoSale], ['Recebimentos duplicados', counts.duplicates], ['Valor conciliado', formatMoney(matchedValue)], ['Valor divergente', formatMoney(divergentValue)], ['% conciliação', `${totalValue ? ((matchedValue / totalValue) * 100).toFixed(1) : '0.0'}%`]]
-  const tabs = [['resumo', 'Resumo'], ['conciliada', `Conciliadas (${counts.reconciled})`], ['divergencia', `Divergências (${counts.divergent})`], ['sem_recebimento', `Sem recebimento (${counts.missing})`], ['sem_venda', `Sem venda (${noSale.length})`], ...(counts.returns ? [['devolucao', `Devoluções (${counts.returns})`]] : [])]
+  const highDiscountRows = discountAudit ? findHighDiscountSales(files.trier?.rows ?? [], discountAudit.mode, discountAudit.threshold) : []
+  const highDiscountTotal = highDiscountRows.reduce((sum, sale) => sum + Number(sale.descontoValor || 0), 0)
+  const highDiscountMaxPercent = highDiscountRows.reduce((highest, sale) => Math.max(highest, Number(sale.descontoPercentual || 0)), 0)
+  const kpis = [['Total de vendas', counts.total], ['Vendas PIX', counts.pix], ['Vendas cartão', counts.card], ['Conciliadas', counts.reconciled], ['Não conciliadas', counts.missing], ['PIX sem venda', counts.pixNoSale], ['Cartão sem venda', counts.cardNoSale], ...(fechamentoCrediario.length ? [['Crediário recebido no cartão', formatMoney(crediarioCartao.reduce((sum, row) => sum + row.valor, 0))]] : []), ['Recebimentos duplicados', counts.duplicates], ['Valor conciliado', formatMoney(matchedValue)], ['Valor divergente', formatMoney(divergentValue)], ['% conciliação', `${totalValue ? ((matchedValue / totalValue) * 100).toFixed(1) : '0.0'}%`]]
+  const tabs = [['resumo', 'Resumo'], ['conciliada', `Conciliadas (${counts.reconciled})`], ['divergencia', `Divergências (${counts.divergent})`], ['sem_recebimento', `Sem recebimento (${counts.missing})`], ['sem_venda', `Sem venda (${noSale.length})`], ...(fechamentoCrediario.length ? [['crediario_cartao', `Crediário cartão (${crediarioCartao.length})`]] : []), ...(counts.returns ? [['devolucao', `Devoluções (${counts.returns})`]] : [])]
 
   useEffect(() => {
     const syncWithBrowserNavigation = () => setActiveSystem(systemFromPathname(window.location.pathname))
@@ -704,10 +753,12 @@ export default function App() {
     <section className="no-print upload-grid">{Object.entries(SOURCES).map(([key, source]) => <FileSlot key={key} source={source} file={files[key]} onFile={(file) => handleFile(key, file)} />)}</section>
     {error && <div role="alert" className="error-box">{error}</div>}
     <section className="no-print controls"><div className="controls-title"><span className="section-kicker">Etapa 2</span><strong>Defina as tolerâncias</strong></div><label>Tolerância de valor (R$)<input type="number" min="0" step="0.1" value={toleranceValue} onChange={(event) => setToleranceValue(event.target.value)} /></label><label>Tolerância de horário (h)<input type="number" min="0" step="0.5" value={toleranceHours} onChange={(event) => setToleranceHours(event.target.value)} /></label><button className="primary-button" disabled={!canRun} onClick={runReconciliation}><span>Executar conciliação</span><b aria-hidden="true">→</b></button></section>
+    <section className="discount-audit-controls no-print"><div className="discount-audit-heading"><span className="discount-audit-icon">%</span><div><span className="section-kicker">Auditoria da Trier</span><strong>Verificar vendas com desconto alto</strong><small>Escolha um limite por percentual ou por valor. Devoluções não entram nessa análise.</small></div></div><div className="discount-audit-form"><div className="discount-mode-toggle" role="group" aria-label="Tipo do limite de desconto"><button type="button" className={discountMode === 'percent' ? 'active' : ''} aria-pressed={discountMode === 'percent'} onClick={() => setDiscountMode('percent')}>% Percentual</button><button type="button" className={discountMode === 'value' ? 'active' : ''} aria-pressed={discountMode === 'value'} onClick={() => setDiscountMode('value')}>R$ Valor</button></div><label>{discountMode === 'percent' ? 'Desconto mínimo (%)' : 'Desconto mínimo (R$)'}<input type="number" min="0" step={discountMode === 'percent' ? '0.1' : '0.01'} value={discountMode === 'percent' ? discountPercentThreshold : discountValueThreshold} onChange={(event) => discountMode === 'percent' ? setDiscountPercentThreshold(event.target.value) : setDiscountValueThreshold(event.target.value)} /></label><button type="button" className="discount-audit-button" disabled={!files.trier} onClick={runDiscountAudit}>Verificar descontos altos <b aria-hidden="true">→</b></button></div></section>
+    {discountAudit && <section className="discount-audit-results"><div className="discount-results-heading"><div><span className="section-kicker">Resultado da auditoria</span><h2>Descontos altos</h2><p>Limite aplicado: <b>{discountAudit.mode === 'percent' ? `${discountAudit.threshold.toFixed(2).replace('.', ',')}%` : formatMoney(discountAudit.threshold)}</b>. A lista está ordenada do maior desconto para o menor.</p></div><button type="button" className="discount-close no-print" onClick={() => setDiscountAudit(null)}>Fechar análise</button></div><div className="discount-kpis"><article><small>Vendas encontradas</small><strong>{highDiscountRows.length}</strong></article><article><small>Total concedido</small><strong>{formatMoney(highDiscountTotal)}</strong></article><article><small>Maior percentual</small><strong>{highDiscountMaxPercent.toFixed(2).replace('.', ',')}%</strong></article></div>{highDiscountRows.length ? <DiscountAuditTable rows={highDiscountRows} /> : <div className="discount-empty"><span>✓</span><div><b>Nenhuma venda ultrapassou esse limite.</b><small>Você pode reduzir o percentual ou o valor e verificar novamente.</small></div></div>}</section>}
     {output && <section className="results-section"><div className="results-heading"><span className="section-kicker">Etapa 3</span><h2>Resultado da conciliação</h2><p>Revise os indicadores e filtre cada coluna para investigar os registros.</p></div><div className="kpi-grid">{kpis.map(([label, value]) => <div className="kpi" key={label}><div>{label}</div><strong>{value}</strong></div>)}</div>
       <div className="no-print tabs"><div className="tab-list">{tabs.map(([key, label]) => <button key={key} className={tab === key ? 'tab active' : 'tab'} onClick={() => setTab(key)}>{label}</button>)}</div><div className="export-list"><button onClick={() => downloadCsv(output, analystMarkers)}>⇩ CSV</button><button onClick={() => downloadExcel(output, analystMarkers)}>⇩ Excel</button><button onClick={() => window.print()}>⇩ PDF</button></div></div>
-      {tab === 'resumo' && <div className="summary-card">Das <b>{counts.total}</b> vendas eletrônicas da Relação de Vendas, <b className="text-green">{counts.reconciled}</b> foram conciliadas, <b className="text-amber">{counts.divergent}</b> tiveram divergência de valor dentro da tolerância e <b className="text-rust">{counts.missing}</b> não encontraram recebimento correspondente.{noSale.length > 0 && <><br /><br />Também foram encontrados <b className="text-rust">{noSale.length}</b> recebimentos sem venda correspondente, sendo <b>{counts.duplicates}</b> identificados como possível duplicidade.</>}{counts.returns > 0 && <><br /><br /><b>{counts.returns}</b> linha(s) de devolução não entraram na conciliação, pois não representam recebimento a buscar.</>}<br /><br />Use as abas para revisar cada grupo ou exporte a tabela final em Excel, CSV ou PDF.</div>}
-      {tab === 'conciliada' && <SalesTable rows={results.filter((row) => row.status === 'CONCILIADA')} />}{tab === 'divergencia' && <SalesTable rows={results.filter((row) => row.status === 'DIVERGENCIA')} />}{tab === 'sem_recebimento' && <SalesTable rows={results.filter((row) => row.status === 'SEM_RECEBIMENTO')} markers={analystMarkers} onToggleMarker={toggleAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_recebimento" />}{tab === 'devolucao' && <SalesTable rows={results.filter((row) => row.status === 'DEVOLUCAO')} />}{tab === 'sem_venda' && <NoSaleTable rows={noSale} markers={analystMarkers} onToggleMarker={toggleAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_venda" />}
+      {tab === 'resumo' && <div className="summary-card">Das <b>{counts.total}</b> vendas eletrônicas da Relação de Vendas, <b className="text-green">{counts.reconciled}</b> foram conciliadas, <b className="text-amber">{counts.divergent}</b> tiveram divergência de valor dentro da tolerância e <b className="text-rust">{counts.missing}</b> não encontraram recebimento correspondente.{noSale.length > 0 && <><br /><br />Também foram encontrados <b className="text-rust">{noSale.length}</b> recebimentos sem venda correspondente, sendo <b>{counts.duplicates}</b> identificados como possível duplicidade.</>}{crediarioCartao.length > 0 && <><br /><br /><b className="text-green">{crediarioCartao.length}</b> recebimento(s) da Cielo, somando <b>{formatMoney(crediarioCartao.reduce((sum, row) => sum + row.valor, 0))}</b>, foram identificados como <b>Contas Recebidas Crediário (Cartão)</b> pelo Fechamento de Caixa.</>}{counts.returns > 0 && <><br /><br /><b>{counts.returns}</b> linha(s) de devolução não entraram na conciliação, pois não representam recebimento a buscar.</>}<br /><br />Use as abas para revisar cada grupo ou exporte a tabela final em Excel, CSV ou PDF.</div>}
+      {tab === 'conciliada' && <SalesTable rows={results.filter((row) => row.status === 'CONCILIADA')} />}{tab === 'divergencia' && <SalesTable rows={results.filter((row) => row.status === 'DIVERGENCIA')} />}{tab === 'sem_recebimento' && <SalesTable rows={results.filter((row) => row.status === 'SEM_RECEBIMENTO')} markers={analystMarkers} onToggleMarker={toggleAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_recebimento" />}{tab === 'devolucao' && <SalesTable rows={results.filter((row) => row.status === 'DEVOLUCAO')} />}{tab === 'sem_venda' && <NoSaleTable rows={noSale} markers={analystMarkers} onToggleMarker={toggleAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_venda" />}{tab === 'crediario_cartao' && <><ClosingCreditSummary groups={fechamentoCrediario} /><NoSaleTable rows={crediarioCartao} /></>}
     </section>}
     <footer className="app-footer"><img src="/drogaria-center-logo.png" alt="Drogaria Center" /><span>Conciliação segura, simples e local.</span></footer>
   </div></main>

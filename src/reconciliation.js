@@ -14,6 +14,7 @@ export const STATUS_LABEL = {
   DIVERGENCIA: 'Divergência',
   SEM_RECEBIMENTO: 'Sem recebimento',
   RECEBIMENTO_SEM_VENDA: 'Recebimento sem venda',
+  CREDIARIO_CARTAO: 'Crediário recebido no cartão',
   DUPLICADO: 'Duplicado',
   DEVOLUCAO: 'Devolução',
 }
@@ -88,12 +89,31 @@ function findAllMoney(line) {
   return [...line.matchAll(MONEY_RE)].map((match) => match[0])
 }
 
+function discountDetails(values, fallbackTotal = null) {
+  const numbers = values.map((value) => typeof value === 'number' ? value : toNumber(value))
+  const [valorBruto, percentualInformado, valorDescontoInformado, valorLiquido] = numbers
+  const descontoValor = Number.isFinite(valorDescontoInformado) ? Math.max(0, -valorDescontoInformado) : 0
+  const descontoPercentualCalculado = Number.isFinite(valorBruto) && valorBruto > 0 ? (descontoValor / valorBruto) * 100 : 0
+  return {
+    valorBruto: Number.isFinite(valorBruto) ? valorBruto : fallbackTotal,
+    descontoPercentual: Number.isFinite(percentualInformado) && percentualInformado > 0 ? percentualInformado : descontoPercentualCalculado,
+    descontoValor,
+    valorLiquido: Number.isFinite(valorLiquido) ? valorLiquido : fallbackTotal,
+  }
+}
+
 function findOperadorCode(text) {
   const upper = text.toUpperCase()
   for (const [name, code] of Object.entries(NOME_TO_CODE)) {
     if (new RegExp(`\\b${name}\\b`).test(upper)) return code
   }
   return OP_CODES.sort((a, b) => b.length - a.length).find((code) => new RegExp(`\\b${code}\\b`).test(text)) ?? null
+}
+
+function findTrierOperator(chunk, firstMoney) {
+  const beforeAmounts = firstMoney ? chunk.slice(0, chunk.indexOf(firstMoney)) : chunk
+  const matches = [...beforeAmounts.matchAll(new RegExp(`\\b(${OP_CODES.sort((a, b) => b.length - a.length).join('|')})\\b`, 'g'))]
+  return matches.at(-1)?.[1] ?? findOperadorCode(beforeAmounts)
 }
 
 export function parseTrierLines(lines) {
@@ -104,15 +124,17 @@ export function parseTrierLines(lines) {
     const time = chunk.match(TIME_RE)
     const monies = findAllMoney(chunk)
     if (!head || !date || !time || !monies.length) return null
+    const valor = toNumber(monies.at(-1))
     return {
       numero: head[1],
       forma: head[2],
-      operador: findOperadorCode(chunk),
+      operador: findTrierOperator(chunk, monies[0]),
       tele: /\bSim\b/.test(chunk) ? 'Sim' : '',
       isDev: /\bDev\b/i.test(chunk),
       data: date[1],
       hora: time[1],
-      valor: toNumber(monies.at(-1)),
+      valor,
+      ...discountDetails(monies.length >= 4 ? monies.slice(0, 4) : [], valor),
       raw: chunk.slice(0, 140),
     }
   }
@@ -142,6 +164,10 @@ function findSpreadsheetColumn(headerRow, expectedLabel) {
   return headerRow.findIndex((value) => normalizeSpreadsheetLabel(value).includes(expectedLabel))
 }
 
+function findExactSpreadsheetColumn(headerRow, expectedLabel) {
+  return headerRow.findIndex((value) => normalizeSpreadsheetLabel(value) === expectedLabel)
+}
+
 function findSellerColumn(headerRow) {
   return headerRow.findIndex((value) => normalizeSpreadsheetLabel(value) === 'vend')
 }
@@ -169,6 +195,10 @@ export async function parseTrierSpreadsheet(file) {
         type: findSpreadsheetColumn(headerRow, 'tipo') + 1,
         delivery: findSpreadsheetColumn(headerRow, 'tele') + 2,
         operator: findSellerColumn(headerRow),
+        gross: findSpreadsheetColumn(headerRow, 'vlr bruto'),
+        discountPercent: findExactSpreadsheetColumn(headerRow, 'desc'),
+        discountValue: findSpreadsheetColumn(headerRow, 'vlr desc'),
+        liquid: findSpreadsheetColumn(headerRow, 'vlr liquido'),
       }
       const rows = []
       for (const sourceRow of values.slice(headerIndex + 1)) {
@@ -181,6 +211,10 @@ export async function parseTrierSpreadsheet(file) {
         const type = String(sourceRow[columns.type] ?? '')
         const tele = String(sourceRow[columns.delivery] ?? '')
         const operator = String(sourceRow[columns.operator] ?? '')
+        const valorBruto = parseLooseNumber(sourceRow[columns.gross])
+        const descontoPercentual = parseLooseNumber(sourceRow[columns.discountPercent])
+        const descontoValor = parseLooseNumber(sourceRow[columns.discountValue])
+        const valorLiquido = parseLooseNumber(sourceRow[columns.liquid])
         rows.push({
           numero,
           forma,
@@ -190,6 +224,7 @@ export async function parseTrierSpreadsheet(file) {
           data: DATE_RE.exec(data)?.[1] ?? data,
           hora: TIME_RE.exec(hora)?.[1] ?? hora,
           valor,
+          ...discountDetails([valorBruto, descontoPercentual, descontoValor, valorLiquido], valor),
           raw: sourceRow.filter((value) => value !== '').join(' '),
         })
       }
@@ -197,6 +232,14 @@ export async function parseTrierSpreadsheet(file) {
     }
   }
   throw new Error('Nao encontrei uma tabela de vendas Trier valida neste XLS.')
+}
+
+export function findHighDiscountSales(sales, mode = 'percent', threshold = 0) {
+  const safeThreshold = Math.max(0, Number(threshold) || 0)
+  const metric = mode === 'value' ? 'descontoValor' : 'descontoPercentual'
+  return sales
+    .filter((sale) => !sale.isDev && Number(sale.descontoValor) > 0.005 && Number(sale[metric]) >= safeThreshold)
+    .sort((first, second) => Number(second[metric]) - Number(first[metric]) || Number(second.descontoValor) - Number(first.descontoValor))
 }
 
 export function parsePagPixLines(lines) {
@@ -310,8 +353,70 @@ export function parseCieloLines(lines) {
   })
 }
 
+export function parseFechamentoLines(lines) {
+  const periodLine = lines.find((line) => /PER[IÍ]ODO/i.test(line) && DATE_RE.test(line))
+  const reportDate = periodLine?.match(DATE_RE)?.[1] ?? lines.find((line) => DATE_RE.test(line))?.match(DATE_RE)?.[1] ?? ''
+  const pattern = /CONTAS\s+RECEBIDAS\s+CREDI[AÁ]RIO\s*\(\s*CART[AÃ]O\s*\)\s*:\s*(-?[\d.]+,\d{2})/i
+  const seen = new Set()
+  return lines.flatMap((raw) => {
+    const match = raw.match(pattern)
+    if (!match) return []
+    const valor = toNumber(match[1])
+    const signature = `${reportDate}|${valor}`
+    if (!Number.isFinite(valor) || valor <= 0 || seen.has(signature)) return []
+    seen.add(signature)
+    return [{
+      data: reportDate,
+      hora: '',
+      valor,
+      tipo: 'Crediário (Cartão)',
+      status: 'INFORMADO',
+      raw: raw.trim(),
+    }]
+  })
+}
+
 function sameDay(a, b) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
+}
+
+function betterClosingSubset(candidate, current, targetCents) {
+  if (!current) return true
+  const candidateDifference = Math.abs(candidate.sum - targetCents)
+  const currentDifference = Math.abs(current.sum - targetCents)
+  if (candidateDifference !== currentDifference) return candidateDifference < currentDifference
+  if (candidate.usedValue !== current.usedValue) return candidate.usedValue < current.usedValue
+  if (candidate.usedCount !== current.usedCount) return candidate.usedCount < current.usedCount
+  return candidate.items.length < current.items.length
+}
+
+function findClosingReceiptSubset(receipts, target, toleranceValue) {
+  const targetCents = Math.round(Number(target) * 100)
+  const toleranceCents = Math.max(0, Math.round(Number(toleranceValue || 0) * 100))
+  if (!targetCents) return []
+  const maximum = targetCents + toleranceCents
+  const states = new Map([[0, { sum: 0, items: [], usedValue: 0, usedCount: 0 }]])
+  receipts.forEach((receipt) => {
+    const cents = Math.round(Number(receipt.valor) * 100)
+    if (cents <= 0 || cents > maximum) return
+    const previousStates = [...states.values()].sort((first, second) => second.sum - first.sum)
+    previousStates.forEach((state) => {
+      const sum = state.sum + cents
+      if (sum > maximum) return
+      const candidate = {
+        sum,
+        items: [...state.items, receipt],
+        usedValue: state.usedValue + (receipt.used ? cents : 0),
+        usedCount: state.usedCount + (receipt.used ? 1 : 0),
+      }
+      if (betterClosingSubset(candidate, states.get(sum), targetCents)) states.set(sum, candidate)
+    })
+  })
+  let best = null
+  states.forEach((state) => {
+    if (state.items.length && Math.abs(state.sum - targetCents) <= toleranceCents && betterClosingSubset(state, best, targetCents)) best = state
+  })
+  return best?.items ?? []
 }
 
 export function reconcile(files, toleranceValue, toleranceHours) {
@@ -325,6 +430,9 @@ export function reconcile(files, toleranceValue, toleranceHours) {
     .map((row) => ({ ...row, dt: parseDataHora(row.data, row.hora), min: timeToMinutes(row.hora), used: false, fonte }))
   const pagpixPool = makePool('pagpix', 'PAGO', 'PaggPix')
   const cieloPool = makePool('cielo', 'APROVADA', 'Cielo')
+  const fechamentoCrediario = (files.fechamento?.rows ?? [])
+    .filter((row) => row.valor > 0 && row.data)
+    .map((row) => ({ ...row, dt: parseDataHora(row.data, row.hora) }))
   const results = []
   const pending = []
 
@@ -341,7 +449,7 @@ export function reconcile(files, toleranceValue, toleranceHours) {
         && ((sale.tele === 'Sim' && item.tipo === 'Delivery') || (sale.tele !== 'Sim' && item.tipo === 'Balcao'))),
       fonte: 'PaggPix',
     }
-    if (sale.forma === 'CARTAO') return { pool: cieloPool.filter((item) => !item.used && sameDay(item.dt, sale.dt)), fonte: 'Cielo' }
+    if (sale.forma === 'CARTAO') return { pool: cieloPool.filter((item) => !item.used && !item.reservedClosing && sameDay(item.dt, sale.dt)), fonte: 'Cielo' }
     return { pool: [], fonte: null }
   }
 
@@ -367,9 +475,45 @@ export function reconcile(files, toleranceValue, toleranceHours) {
     if (resolved.has(sale.numero)) return
     resolved.set(sale.numero, tryMatch(sale, false) ?? { sale, status: 'SEM_RECEBIMENTO', fonte: getPool(sale).fonte, motivo: 'Nenhum recebimento correspondente encontrado' })
   })
+
+  let requiresRematch = false
+  const closingGroups = fechamentoCrediario.map((closing, index) => {
+    const candidates = cieloPool.filter((item) => !item.reservedClosing && sameDay(item.dt, closing.dt))
+    const receipts = findClosingReceiptSubset(candidates, closing.valor, toleranceValue)
+    if (receipts.some((receipt) => receipt.used)) requiresRematch = true
+    receipts.forEach((receipt) => { receipt.reservedClosing = true; receipt.closingGroup = index })
+    const totalEncontrado = receipts.reduce((sum, receipt) => sum + receipt.valor, 0)
+    return {
+      ...closing,
+      receipts,
+      totalEncontrado: +totalEncontrado.toFixed(2),
+      diff: +(closing.valor - totalEncontrado).toFixed(2),
+      conciliado: receipts.length > 0 && Math.abs(closing.valor - totalEncontrado) <= toleranceValue,
+    }
+  })
+
+  if (requiresRematch) {
+    pagpixPool.forEach((item) => { item.used = false })
+    cieloPool.forEach((item) => { item.used = false })
+    resolved.clear()
+    pending.forEach((sale) => {
+      const match = tryMatch(sale, true)
+      if (match) resolved.set(sale.numero, match)
+    })
+    pending.forEach((sale) => {
+      if (resolved.has(sale.numero)) return
+      resolved.set(sale.numero, tryMatch(sale, false) ?? { sale, status: 'SEM_RECEBIMENTO', fonte: getPool(sale).fonte, motivo: 'Nenhum recebimento correspondente encontrado' })
+    })
+  }
   pending.forEach((sale) => results.push(resolved.get(sale.numero)))
 
-  const semVenda = [...pagpixPool, ...cieloPool].filter((item) => !item.used).map((item) => ({ ...item, status: 'RECEBIMENTO_SEM_VENDA' }))
+  const crediarioCartao = closingGroups.flatMap((group) => group.receipts.map((item) => ({
+    ...item,
+    status: 'CREDIARIO_CARTAO',
+    fechamentoValor: group.valor,
+    fechamentoData: group.data,
+  })))
+  const semVenda = [...pagpixPool, ...cieloPool].filter((item) => !item.used && !item.reservedClosing).map((item) => ({ ...item, status: 'RECEBIMENTO_SEM_VENDA' }))
   semVenda.forEach((item, index) => {
     semVenda.slice(index + 1).forEach((other) => {
       if (other.status !== 'DUPLICADO' && item.fonte === other.fonte && Math.abs(item.valor - other.valor) < 0.005 && Math.abs(item.dt - other.dt) <= 60000) {
@@ -378,7 +522,7 @@ export function reconcile(files, toleranceValue, toleranceHours) {
       }
     })
   })
-  return { results, semVenda }
+  return { results, semVenda, crediarioCartao, fechamentoCrediario: closingGroups.map(({ receipts, ...group }) => ({ ...group, quantidadeRecebimentos: receipts.length })) }
 }
 
 export function operatorName(code) {

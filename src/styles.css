@@ -438,6 +438,40 @@
 .primary-button:not(:disabled):hover { box-shadow: 0 15px 30px rgba(198, 0, 23, .3); transform: translateY(-2px); }
 .primary-button b { font-size: 20px; line-height: 1; }
 .primary-button:disabled { cursor: not-allowed; background: #d8cdd0; box-shadow: none; }
+.discount-audit-controls { display: flex; flex-direction: column; gap: 15px; margin: -17px 0 34px; border: 1px solid #f0d7a1; border-radius: 20px; background: linear-gradient(145deg, #fffaf0, #fff); padding: 16px; box-shadow: var(--shadow); }
+.discount-audit-heading { display: flex; align-items: center; gap: 11px; }
+.discount-audit-heading > div { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.discount-audit-heading .section-kicker { margin: 0; color: #a46800; }
+.discount-audit-heading strong { color: #4f3610; font-size: 14px; }
+.discount-audit-heading small { color: #8a7454; font-size: 9.5px; line-height: 1.45; }
+.discount-audit-icon { display: grid; width: 40px; height: 40px; flex: 0 0 auto; place-items: center; border-radius: 13px; background: #f2aa18; color: #442c00; font-size: 17px; font-weight: 950; box-shadow: 0 8px 18px rgba(207, 137, 0, .2); }
+.discount-audit-form { display: grid; grid-template-columns: 1fr; gap: 9px; }
+.discount-mode-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; border-radius: 12px; background: #f7edda; padding: 4px; }
+.discount-mode-toggle button { min-height: 38px; border: 0; border-radius: 9px; background: transparent; color: #846530; font-size: 10px; font-weight: 850; }
+.discount-mode-toggle button.active { background: white; color: #855500; box-shadow: 0 5px 13px rgba(91, 57, 0, .10); }
+.discount-audit-form label { color: #715a35; font-size: 10px; font-weight: 800; }
+.discount-audit-form input { display: block; width: 100%; min-height: 42px; margin-top: 5px; border: 1px solid #ead4a9; border-radius: 10px; background: white; padding: 8px 10px; color: #4d360f; font-size: 13px; font-weight: 800; }
+.discount-audit-form input:focus { border-color: #d89308; outline: 3px solid rgba(216, 147, 8, .13); }
+.discount-audit-button { display: flex; min-height: 46px; align-items: center; justify-content: center; gap: 10px; border: 0; border-radius: 11px; background: linear-gradient(135deg, #e5a00e, #bd7200); padding: 10px 14px; color: white; font-size: 11px; font-weight: 900; box-shadow: 0 9px 20px rgba(189, 114, 0, .2); }
+.discount-audit-button b { font-size: 17px; }
+.discount-audit-button:disabled { cursor: not-allowed; background: #d8cdd0; box-shadow: none; }
+.discount-audit-results { margin: 0 0 34px; scroll-margin-top: 20px; }
+.discount-results-heading { display: flex; flex-direction: column; gap: 10px; margin: 0 3px 14px; }
+.discount-results-heading h2 { margin-bottom: 4px; font-size: 1.5rem; }
+.discount-results-heading p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.discount-close { align-self: flex-start; min-height: 36px; border: 1px solid #ead7da; border-radius: 10px; background: white; padding: 7px 10px; color: #795f64; font-size: 9.5px; font-weight: 800; }
+.discount-kpis { display: grid; grid-template-columns: 1fr; gap: 8px; margin-bottom: 12px; }
+.discount-kpis article { border: 1px solid #efd9aa; border-radius: 15px; background: linear-gradient(145deg, #fffaf0, #fff); padding: 13px; box-shadow: var(--shadow); }
+.discount-kpis small { display: block; margin-bottom: 7px; color: #8e7447; font-size: 8.5px; font-weight: 850; letter-spacing: .05em; text-transform: uppercase; }
+.discount-kpis strong { color: #7d4e00; font-size: 19px; }
+.discount-high-row td { background: #fffdf7; }
+.discount-high-row td:first-child { box-shadow: inset 4px 0 0 #e5a00e; }
+.discount-high-percent, .discount-high-value { color: #a35f00; font-weight: 900; white-space: nowrap; }
+.discount-empty { display: flex; align-items: center; gap: 11px; border: 1px solid #d9e9b5; border-radius: 16px; background: #f9ffed; padding: 16px; color: #536e13; }
+.discount-empty > span { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border-radius: 50%; background: var(--brand-green); color: #2e4700; font-weight: 950; }
+.discount-empty > div { display: flex; flex-direction: column; gap: 2px; }
+.discount-empty b { font-size: 11px; }
+.discount-empty small { color: #74864a; font-size: 9px; }
 .error-box { margin: 18px 0 0; border: 1px solid #f0bec5; border-radius: 13px; background: #fff0f2; padding: 12px 14px; color: #a50014; font-size: 12px; font-weight: 600; line-height: 1.5; }
 
 .results-section { scroll-margin-top: 20px; }
@@ -500,10 +534,23 @@
 .empty-row td { height: 90px; color: var(--muted); text-align: center; }
 .status { display: inline-block; border-radius: 999px; padding: 4px 9px; font-size: 10px; font-weight: 800; }
 .status-CONCILIADA { background: #effbd9; color: #527e00; }
+.status-CREDIARIO_CARTAO { background: #e7f8f4; color: #08735e; }
 .status-DIVERGENCIA { background: #fff4d6; color: #9a6600; }
 .status-SEM_RECEBIMENTO, .status-RECEBIMENTO_SEM_VENDA { background: #ffe9ec; color: #b00015; }
 .status-DUPLICADO { background: #f2e9f8; color: #744195; }
 .status-DEVOLUCAO { background: #f1edef; color: #75666a; }
+.closing-credit-groups { display: grid; gap: 10px; margin-bottom: 14px; }
+.closing-credit-groups article { display: grid; gap: 14px; border: 1px solid #d9e9e5; border-radius: 17px; background: linear-gradient(145deg, #f3fffc, #fff); padding: 16px; box-shadow: var(--shadow); }
+.closing-credit-groups article.pending { border-color: #f0d7a1; background: linear-gradient(145deg, #fffaf0, #fff); }
+.closing-credit-groups article > div { display: flex; flex-direction: column; gap: 3px; }
+.closing-credit-groups article span { color: #08735e; font-size: 9px; font-weight: 900; letter-spacing: .05em; text-transform: uppercase; }
+.closing-credit-groups article.pending span { color: #a46800; }
+.closing-credit-groups article strong { color: #254d45; font-size: 13px; }
+.closing-credit-groups article small { color: var(--muted); font-size: 9px; }
+.closing-credit-groups dl { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin: 0; }
+.closing-credit-groups dl div { border-radius: 11px; background: rgba(255, 255, 255, .78); padding: 9px; }
+.closing-credit-groups dt { color: var(--muted); font-size: 8px; font-weight: 800; text-transform: uppercase; }
+.closing-credit-groups dd { margin: 3px 0 0; color: #173d35; font-size: 12px; font-weight: 900; }
 .text-green { color: var(--brand-green-dark); }
 .text-amber { color: #a66d00; }
 .text-rust { color: var(--brand-red-dark); }
@@ -512,6 +559,11 @@
 .app-footer img { width: 135px; height: auto; }
 
 @media (min-width: 640px) {
+  .closing-credit-groups article { grid-template-columns: minmax(210px, .8fr) 1.2fr; align-items: center; }
+  .closing-credit-groups dl { grid-template-columns: repeat(4, 1fr); }
+  .discount-audit-form { grid-template-columns: 1.1fr .8fr 1.1fr; align-items: end; }
+  .discount-kpis { grid-template-columns: repeat(3, 1fr); }
+  .discount-results-heading { flex-direction: row; align-items: flex-end; justify-content: space-between; }
   .quote-auto-match-setting { flex-direction: row; align-items: center; justify-content: space-between; }
   .table-meta { flex-direction: row; align-items: center; justify-content: space-between; }
   .analyst-review-toolbar { flex-direction: row; align-items: center; justify-content: space-between; }
