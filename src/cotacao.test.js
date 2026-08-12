@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { autoMapColumns, calculateOrder, compareProductNames, matchesProductSearch, normalizeEan, parseDcbCatalog, productLinkId, toNumber } from './cotacao.js'
+import { autoMapColumns, calculateOrder, compareProductNames, findPriceHistoryReference, getOfferComparisonStatus, matchesProductSearch, normalizeEan, parseDcbCatalog, parsePriceHistory, productLinkId, toNumber } from './cotacao.js'
 
 const orderItem = { id: 'pedido-1', ean: '7890000000001', nome: 'LOSARTANA POT 50MG 30CP REV', quantidadePedida: 10, fornecedorPreferido: null }
 
@@ -138,6 +138,38 @@ test('corrige o caractere G usado como dígito 9 em EAN e preço', () => {
   assert.equal(toNumber('1,4G'), 1.49)
 })
 
+test('mapeia e importa o histórico de custo do relatório Trier rel_0014', () => {
+  const headers = ['', 'Cód. Barras', 'Descrição', '', '', 'Laboratório', 'Grupo', 'Curva/Padrão', 'Estoq. Mín.', 'Qtd. Dem.', 'Qtd. Crit.', '', 'Acim. Dem/Cri', '', 'Estq.', 'P. Custo', 'P Venda']
+  const rows = [
+    ['', '7896004817477', 'A SAUDE DA MULHER LIQ 150ML', '', '', 'EMS', 5, 'D / Q', 0, 0, 0, '', 2, '', 2, 14.23, 23.64],
+    ['', '7896331702583', 'ABC 10MG/ML SPR DERM 30ML', '', '', 'KLEY HERTZ', 5, 'D / Q', 0, 0, 0, '', 1, '', 1, 17.97, 33.99],
+  ]
+  const mapping = autoMapColumns(headers, rows)
+  const parsed = parsePriceHistory(rows, { eanIndex: mapping.ean, nameIndex: mapping.nome, costIndex: mapping.precoCusto, laboratoryIndex: mapping.laboratorio })
+  assert.deepEqual(mapping, { ean: 1, nome: 2, quantidade: 9, precoCusto: 15, laboratorio: 5 })
+  assert.equal(parsed.history['7896004817477'].precoCusto, 14.23)
+  assert.equal(parsed.history['7896331702583'].laboratorio, 'KLEY HERTZ')
+})
+
+test('histórico usa o EAN real da oferta quando o EAN do pedido é diferente', () => {
+  const history = {
+    '7896004708539': { ean: '7896004708539', nome: 'LOSARTANA POT.50MG 30 COM REV-GD', laboratorio: 'GERMED', precoCusto: .95 },
+  }
+  const reference = findPriceHistoryReference({ ean: '7890000000001', eanOferta: '7896004708539' }, history)
+  assert.equal(reference.precoCusto, .95)
+  assert.equal(reference.referenceMethod, 'offer-ean')
+})
+
+test('histórico mantém prioridade para o EAN original do pedido', () => {
+  const history = {
+    '7890000000001': { ean: '7890000000001', precoCusto: 1.2 },
+    '7896004708539': { ean: '7896004708539', precoCusto: .95 },
+  }
+  const reference = findPriceHistoryReference({ ean: '7890000000001', eanOferta: '7896004708539' }, history)
+  assert.equal(reference.precoCusto, 1.2)
+  assert.equal(reference.referenceMethod, 'order-ean')
+})
+
 test('cápsula versus comprimido exige revisão e entra no cálculo após confirmação', () => {
   const tramadolOrder = { id: 'tramadol-pedido', ean: '7896112121145', nome: 'TRAMADOL 50MG 10CAP', quantidadePedida: 8, laboratorio: 'TEUTO' }
   const candidate = { ean: '7896004711768', nome: 'TRAMADOL 50MG C/10 COMP', ofertas: [{ fornecedor: 'Germed', precoUnitario: 4.75 }] }
@@ -201,4 +233,35 @@ test('base DCB descarta EAN conflitante e mantém chave canônica', () => {
   assert.equal(parsed.catalog['7891000000001'].key, 'DIPIRONA500MGCAPS/COMP/DRAG30')
   assert.equal(parsed.catalog['7891000000002'], undefined)
   assert.equal(parsed.conflicts, 1)
+})
+
+test('compara metoprolol 25mg de Biossintética e Medley pela mesma apresentação', () => {
+  const order = { id: 'metoprolol', ean: '7898947385693', nome: 'METOPROLOL 25MG 30CP REV L.P', quantidadePedida: 5 }
+  const data = {
+    '7896658053498': { ean: '7896658053498', nome: 'SUC METOPROLOL 25MG COM LIB PROL BLX30', ofertas: [{ fornecedor: 'Biossintética', precoUnitario: 16.21573154996066 }] },
+    '7891058000950': { ean: '7891058000950', nome: 'SUCCINATO METOPROLOL COMP REV 25MG C/30', ofertas: [{ fornecedor: 'Medley', precoUnitario: 17.2 }] },
+  }
+  const result = calculateOrder(data, [order], {}, {}, { autoAcceptSafe: true })[0]
+  assert.equal(result.ofertasDisponiveis.length, 2)
+  assert.equal(result.fornecedorSelecionado, 'Biossintética')
+  assert.equal(result.eanOferta, '7896658053498')
+  assert.equal(getOfferComparisonStatus([result], 'Biossintética', '7896658053498'), 'winner')
+  assert.equal(getOfferComparisonStatus([result], 'Medley', '7891058000950'), 'compared')
+})
+
+test('compara clopidogrel mensal de EMS, Medley e Germed mesmo entre caixas de 28 e 30', () => {
+  const order = { id: 'clopidogrel', ean: '7896112103394', nome: 'CLOPIDOGREL 75MG 30CP REV', quantidadePedida: 3 }
+  const data = {
+    '7896004738406': { ean: '7896004738406', nome: 'BISSUL CLOPIDOGREL 75MG 28CP EMS', ofertas: [{ fornecedor: 'EMS', precoUnitario: 18.727748 }] },
+    '7896422516112': { ean: '7896422516112', nome: 'Bissulf Clopidogrel 75mg c/28', ofertas: [{ fornecedor: 'Medley', precoUnitario: 35.39 }] },
+    '7896004738413': { ean: '7896004738413', nome: 'CLOPIDOGREL75MG C/28 COMP', ofertas: [{ fornecedor: 'Germed', precoUnitario: 15.58 }] },
+  }
+  const result = calculateOrder(data, [order], {}, {}, { autoAcceptSafe: true })[0]
+  assert.equal(result.ofertasDisponiveis.length, 3)
+  assert.deepEqual(result.ofertasDisponiveis.map((offer) => offer.fornecedor), ['Germed', 'EMS', 'Medley'])
+  assert.equal(result.fornecedorSelecionado, 'Germed')
+  assert.equal(result.matchMethod, 'auto-reviewed-name')
+  assert.equal(getOfferComparisonStatus([result], 'Germed', '7896004738413'), 'winner')
+  assert.equal(getOfferComparisonStatus([result], 'EMS', '7896004738406'), 'compared')
+  assert.equal(getOfferComparisonStatus([result], 'Medley', '7896422516112'), 'compared')
 })

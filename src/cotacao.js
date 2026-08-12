@@ -167,6 +167,14 @@ export function parsePriceHistory(rows, { eanIndex, nameIndex = null, costIndex,
   return { history, invalid, duplicates }
 }
 
+export function findPriceHistoryReference(item, history = {}) {
+  const orderEan = normalizeEan(item?.ean)
+  const offerEan = normalizeEan(item?.eanOferta)
+  if (orderEan && history[orderEan]) return { ...history[orderEan], referenceMethod: 'order-ean' }
+  if (offerEan && history[offerEan]) return { ...history[offerEan], referenceMethod: 'offer-ean' }
+  return null
+}
+
 export function normalizeDcbKey(value) {
   return normalizeHeader(value)
     .replace(/(\d),(\d)/g, '$1.$2')
@@ -213,7 +221,8 @@ const PRODUCT_STOPWORDS = new Set([
   'BR', 'RGD', 'GD', 'CRG', 'EMS', 'GERMED', 'BIOLAB', 'RANBAXY', 'MEDLEY', 'PRATI', 'NEO', 'NEOQUIMICA',
   'TEUTO', 'CIMED', 'ACHE', 'BIOSINTETICA', 'EUROFARMA', 'LEGRAND', 'MULTILAB', 'SANDOZ', 'SANOFI', 'COM',
   'CP', 'CPR', 'COMP', 'COMPR', 'COMPRIMIDO', 'COMPRIMIDOS', 'CAP', 'CAPS', 'CAPSULA', 'CAPSULAS', 'UN', 'AMP', 'SACH',
-  'MG', 'MCG', 'G', 'ML', 'UI', 'MUI', 'DOSE', 'DOSES',
+  'MG', 'MCG', 'G', 'ML', 'UI', 'MUI', 'DOSE', 'DOSES', 'SUC', 'SUCC', 'SUCCINATO', 'BISSUL', 'BISSULF',
+  'BISSULFATO', 'LIB', 'PROL', 'LP',
 ])
 
 const FORM_ALIASES = [
@@ -249,6 +258,7 @@ function diceScore(first, second) {
 export function normalizeProductName(value) {
   return normalizeHeader(value)
     .replace(/(\d),(\d)/g, '$1.$2')
+    .replace(/\bL\s*\.\s*P\b/g, ' LP ')
     .replace(/\b(HIDROCLOROTIAZIDA|HCTZ|HCT)\b/g, ' HCTZ ')
     .replace(/\bPOTASSICA\b|\bPOT\b/g, ' ')
     .replace(/\bREVESTIDOS?\b|\bREV\b/g, ' ')
@@ -262,6 +272,7 @@ export function normalizeProductName(value) {
 export function buildProductSignature(name, supplier = '') {
   let text = normalizeProductName(name)
   text = text.replace(/(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\s*(MCG|MG|G|UI)\b/g, '$1$3 + $2$3')
+  const metoprololSuccinate = /\bMETOPROLOL\b/.test(text) && /\b(SUC|SUCC|SUCCINATO)\b/.test(text)
   const packPatterns = [
     /\bC\s*\/\s*(\d+)\b/,
     /\bBL(?:ISTER)?\s*X?\s*(\d+)\b/,
@@ -270,7 +281,7 @@ export function buildProductSignature(name, supplier = '') {
   const packMatch = packPatterns.map((pattern) => text.match(pattern)).find(Boolean)
   const pack = packMatch ? Number(packMatch[1]) : null
   const form = FORM_ALIASES.find(([, pattern]) => pattern.test(text))?.[0] || null
-  const release = /\b(LP|XR|ER|RETARD|PROLONGAD[AO]S?)\b|\bLIBERACAO\s+PROLONGADA\b/.test(text) ? 'extended' : 'immediate'
+  const release = metoprololSuccinate || /\b(L\s*\.?\s*P|XR|ER|RETARD|PROL|PROLONGAD[AO]S?)\b|\bLIB(?:ERACAO)?\s+PROL(?:ONGADA)?\b/.test(text) ? 'extended' : 'immediate'
   const doseTokens = uniqueSorted([...text.matchAll(/(\d+(?:\.\d+)?)\s*(MCG|MG|G|UI|MUI|%)(?:\s*\/\s*(ML|G|DOSE))?/g)].map((match) => `${Number(match[1])}${match[2]}${match[3] ? `/${match[3]}` : ''}`))
   const sizeTokens = uniqueSorted([...text.matchAll(/(\d+(?:\.\d+)?)\s*(ML|G)\b/g)].map((match) => `${Number(match[1])}${match[2]}`).filter((token) => !doseTokens.includes(token)))
   const supplierTokens = new Set(normalizeProductName(supplier).split(' ').filter(Boolean))
@@ -294,9 +305,17 @@ export function compareProductNames(orderName, candidateName, candidateSupplier 
   const conflicts = []
   const solidOralForms = new Set(['tablet', 'capsule'])
   const reviewableSolidOralDifference = Boolean(order.form && candidate.form && order.form !== candidate.form && solidOralForms.has(order.form) && solidOralForms.has(candidate.form))
+  const reviewableMissingSolidForm = Boolean(
+    order.pack !== null && candidate.pack !== null
+    && ((order.form === 'tablet' && !candidate.form) || (candidate.form === 'tablet' && !order.form)),
+  )
+  const reviewableMonthlyPackDifference = Boolean(
+    order.pack !== null && candidate.pack !== null && order.pack !== candidate.pack
+    && [order.pack, candidate.pack].every((pack) => pack === 28 || pack === 30),
+  )
   if (order.doseTokens.length && candidate.doseTokens.length && !sameValues(order.doseTokens, candidate.doseTokens)) conflicts.push('dosagem')
   if (order.form && candidate.form && order.form !== candidate.form && !reviewableSolidOralDifference) conflicts.push('forma')
-  if (order.pack !== null && candidate.pack !== null && order.pack !== candidate.pack) conflicts.push('embalagem')
+  if (order.pack !== null && candidate.pack !== null && order.pack !== candidate.pack && !reviewableMonthlyPackDifference) conflicts.push('embalagem')
   if (order.sizeTokens.length && candidate.sizeTokens.length && !sameValues(order.sizeTokens, candidate.sizeTokens)) conflicts.push('volume')
   if (!sameValues(order.associations, candidate.associations)) conflicts.push('associação')
   if (order.release !== candidate.release) conflicts.push('liberação')
@@ -304,15 +323,22 @@ export function compareProductNames(orderName, candidateName, candidateSupplier 
   const doseMatch = order.doseTokens.length > 0 && candidate.doseTokens.length > 0 && sameValues(order.doseTokens, candidate.doseTokens)
   const formMatch = Boolean(order.form && candidate.form && order.form === candidate.form)
   const presentationMatch = Boolean(order.presentation && candidate.presentation && order.presentation === candidate.presentation)
+  const formCompatible = formMatch || reviewableSolidOralDifference || reviewableMissingSolidForm
+  const presentationCompatible = presentationMatch || reviewableMonthlyPackDifference
   const score = Math.round((ingredientSimilarity * .6 + (doseMatch ? .2 : 0) + (formMatch ? .1 : 0) + (presentationMatch ? .1 : 0)) * 100)
   const automatic = !conflicts.length && ingredientSimilarity >= .85 && doseMatch && formMatch && presentationMatch
   const suggestion = !conflicts.length && !automatic && ingredientSimilarity >= .55 && (doseMatch || formMatch || presentationMatch)
-  const safeToAutoAccept = !conflicts.length && ingredientSimilarity >= .85 && doseMatch && presentationMatch && (formMatch || reviewableSolidOralDifference)
+  const safeToAutoAccept = !conflicts.length && ingredientSimilarity >= .85 && doseMatch && presentationCompatible && formCompatible
+  const reviewReasons = [
+    ...(reviewableSolidOralDifference ? ['cápsula versus comprimido'] : []),
+    ...(reviewableMissingSolidForm ? ['forma não informada na oferta'] : []),
+    ...(reviewableMonthlyPackDifference ? [`embalagem ${order.pack} versus ${candidate.pack}`] : []),
+  ]
   return {
     status: conflicts.length ? 'conflict' : automatic ? 'automatic' : suggestion ? 'suggestion' : 'possible',
     score,
     conflicts,
-    reviewReasons: reviewableSolidOralDifference ? ['cápsula versus comprimido'] : [],
+    reviewReasons,
     safeToAutoAccept,
     order,
     candidate,
@@ -326,6 +352,16 @@ export function productLinkId(item, candidateEan) {
 
 export function createOfferKey(supplier, sourceEan) {
   return `${normalizeHeader(supplier)}|${normalizeEan(sourceEan)}`
+}
+
+export function getOfferComparisonStatus(orderResults, supplier, sourceEan) {
+  const offerKey = createOfferKey(supplier, sourceEan)
+  let compared = false
+  for (const order of orderResults) {
+    if (order.offerKey === offerKey) return 'winner'
+    if (order.ofertasDisponiveis?.some((offer) => offer.offerKey === offerKey)) compared = true
+  }
+  return compared ? 'compared' : 'unused'
 }
 
 export function findProductMatches(cotacoes, item, productLinks = {}, matchingOptions = {}, dcbCatalog = {}) {
