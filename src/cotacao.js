@@ -167,12 +167,96 @@ export function parsePriceHistory(rows, { eanIndex, nameIndex = null, costIndex,
   return { history, invalid, duplicates }
 }
 
-export function findPriceHistoryReference(item, history = {}) {
+const historyIndexCache = new WeakMap()
+
+function historyRecords(history) {
+  if (!history || typeof history !== 'object') return []
+  if (historyIndexCache.has(history)) return historyIndexCache.get(history)
+  const records = Object.values(history).map((reference) => ({ ...reference, signature: buildProductSignature(reference.nome || '') }))
+  historyIndexCache.set(history, records)
+  return records
+}
+
+function historyNameMatch(item, history) {
+  const sources = [
+    { name: item?.nomeOferta, laboratory: item?.fornecedorSelecionado, priority: 2 },
+    { name: item?.nome, laboratory: item?.laboratorio, priority: 1 },
+  ].filter((source) => source.name)
+  let best = null
+
+  historyRecords(history).forEach((reference) => {
+    if (!reference.nome) return
+    sources.forEach((source) => {
+      const target = buildProductSignature(source.name)
+      const candidate = reference.signature
+      const ingredientSimilarity = diceScore(target.ingredientTokens, candidate.ingredientTokens)
+      const doseMatch = target.doseTokens.length > 0 && candidate.doseTokens.length > 0 && sameValues(target.doseTokens, candidate.doseTokens)
+      const associationsMatch = sameValues(target.associations, candidate.associations)
+      const sizeMatch = !target.sizeTokens.length || !candidate.sizeTokens.length || sameValues(target.sizeTokens, candidate.sizeTokens)
+      const solidForms = new Set(['tablet', 'capsule'])
+      const formCompatible = target.form === candidate.form || (solidForms.has(target.form) && solidForms.has(candidate.form))
+      if (ingredientSimilarity < .85 || !doseMatch || !associationsMatch || !sizeMatch || !formCompatible || target.release !== candidate.release) return
+
+      let method = 'equivalent-name'
+      let adjustedCost = reference.precoCusto
+      let packRatio = 1
+      if (target.pack !== null && candidate.pack !== null && target.pack !== candidate.pack) {
+        packRatio = target.pack / candidate.pack
+        adjustedCost = reference.precoCusto * packRatio
+        method = 'converted-pack'
+      } else if ((target.pack === null) !== (candidate.pack === null)) method = 'equivalent-name'
+
+      const exactName = normalizeProductName(source.name) === normalizeProductName(reference.nome)
+      const sameLaboratory = normalizeHeader(source.laboratory) && normalizeHeader(source.laboratory) === normalizeHeader(reference.laboratorio)
+      const score = ingredientSimilarity * 100 + (exactName ? 30 : 0) + (target.form === candidate.form ? 10 : 0) + (target.pack === candidate.pack ? 10 : 0) + (sameLaboratory ? 8 : 0) + source.priority
+      if (!best || score > best.score) best = {
+        ...reference,
+        signature: undefined,
+        precoCusto: adjustedCost,
+        precoCustoOriginal: reference.precoCusto,
+        referenceMethod: method,
+        referencePack: candidate.pack,
+        targetPack: target.pack,
+        packRatio,
+        score,
+      }
+    })
+  })
+  if (!best) return null
+  const { score, ...result } = best
+  return result
+}
+
+export function findPriceHistoryReference(item, history = {}, dcbCatalog = {}) {
   const orderEan = normalizeEan(item?.ean)
   const offerEan = normalizeEan(item?.eanOferta)
   if (orderEan && history[orderEan]) return { ...history[orderEan], referenceMethod: 'order-ean' }
   if (offerEan && history[offerEan]) return { ...history[offerEan], referenceMethod: 'offer-ean' }
-  return null
+  const dcbKeys = new Set([dcbCatalog[orderEan]?.key, dcbCatalog[offerEan]?.key].filter(Boolean))
+  if (dcbKeys.size) {
+    const dcbMatches = historyRecords(history).filter((reference) => dcbKeys.has(dcbCatalog[normalizeEan(reference.ean)]?.key))
+    if (dcbMatches.length) {
+      const preferredNames = [normalizeProductName(item?.nomeOferta), normalizeProductName(item?.nome)].filter(Boolean)
+      const preferredLaboratories = [item?.fornecedorSelecionado, item?.laboratorio]
+        .map((value) => normalizeHeader(value).replace(/[^A-Z0-9]+/g, ' ').trim())
+        .filter(Boolean)
+      const referenceScore = (reference) => {
+        const normalizedName = normalizeProductName(reference.nome)
+        const exactName = preferredNames.includes(normalizedName) ? 1 : 0
+        const nameTokens = normalizedName.split(/\s+/).filter(Boolean)
+        const nameSimilarity = Math.max(0, ...preferredNames.map((name) => diceScore(name.split(/\s+/).filter(Boolean), nameTokens)))
+        const laboratory = normalizeHeader(reference.laboratorio).replace(/[^A-Z0-9]+/g, ' ').trim()
+        const sameLaboratory = laboratory && preferredLaboratories.some((preferred) => laboratory === preferred || laboratory.includes(preferred) || preferred.includes(laboratory)) ? 1 : 0
+        return exactName * 100 + sameLaboratory * 50 + nameSimilarity * 20
+      }
+      dcbMatches.sort((first, second) => {
+        return referenceScore(second) - referenceScore(first)
+      })
+      const { signature, ...reference } = dcbMatches[0]
+      return { ...reference, referenceMethod: 'dcb' }
+    }
+  }
+  return historyNameMatch(item, history)
 }
 
 export function normalizeDcbKey(value) {
@@ -222,15 +306,17 @@ const PRODUCT_STOPWORDS = new Set([
   'TEUTO', 'CIMED', 'ACHE', 'BIOSINTETICA', 'EUROFARMA', 'LEGRAND', 'MULTILAB', 'SANDOZ', 'SANOFI', 'COM',
   'CP', 'CPR', 'COMP', 'COMPR', 'COMPRIMIDO', 'COMPRIMIDOS', 'CAP', 'CAPS', 'CAPSULA', 'CAPSULAS', 'UN', 'AMP', 'SACH',
   'MG', 'MCG', 'G', 'ML', 'UI', 'MUI', 'DOSE', 'DOSES', 'SUC', 'SUCC', 'SUCCINATO', 'BISSUL', 'BISSULF',
-  'BISSULFATO', 'LIB', 'PROL', 'LP',
+  'BISSULFATO', 'MALEATO', 'CLORIDRATO', 'DICLORIDRATO', 'FOSFATO', 'BESILATO', 'MESILATO', 'FUMARATO',
+  'HEMIFUMARATO', 'CITRATO', 'TARTARATO', 'OXALATO', 'SODICO', 'SODICA', 'CALCICO', 'CALCICA', 'DURA', 'DURAS',
+  'L', 'R', 'LIB', 'PROL', 'LP',
 ])
 
 const FORM_ALIASES = [
   ['tablet', /\b(CP|CPR|COM|COMP|COMPR|COMPRIMIDOS?|DRAGEAS?|DRG)\b/],
   ['capsule', /\b(CAP|CAPS|CAPSULAS?)\b/],
-  ['drops', /\b(GTS|GOTAS?)\b/],
+  ['drops', /\b(GTS|GOTAS?|COL|COLIRIO)\b/],
   ['syrup', /\b(XPE|XAROPE)\b/],
-  ['suspension', /\b(SUSP|SUSPENSAO)\b/],
+  ['suspension', /\b(SUS|SUSP|SUSPENSAO)\b/],
   ['solution', /\b(SOL|SOLUCAO)\b/],
   ['cream', /\b(CR|CREME)\b/],
   ['ointment', /\b(POM|POMADA)\b/],
@@ -260,6 +346,10 @@ export function normalizeProductName(value) {
     .replace(/(\d),(\d)/g, '$1.$2')
     .replace(/\bL\s*\.\s*P\b/g, ' LP ')
     .replace(/\b(HIDROCLOROTIAZIDA|HCTZ|HCT)\b/g, ' HCTZ ')
+    .replace(/\b(PARAC|PARACET)\b/g, ' PARACETAMOL ')
+    .replace(/\bCOD\b/g, ' CODEINA ')
+    .replace(/\bOLMESART\b/g, ' OLMESARTANA ')
+    .replace(/\bUNIPRAZOL\b/g, ' OMEPRAZOL ')
     .replace(/\bPOTASSICA\b|\bPOT\b/g, ' ')
     .replace(/\bREVESTIDOS?\b|\bREV\b/g, ' ')
     .replace(/([A-Z])(\d)/g, '$1 $2')
@@ -273,19 +363,23 @@ export function buildProductSignature(name, supplier = '') {
   let text = normalizeProductName(name)
   text = text.replace(/(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\s*(MCG|MG|G|UI)\b/g, '$1$3 + $2$3')
   const metoprololSuccinate = /\bMETOPROLOL\b/.test(text) && /\b(SUC|SUCC|SUCCINATO)\b/.test(text)
+  const multipliedPackMatch = text.match(/\b(\d+)\s*(?:BL|BLT|BLISTER|BX)\s*X?\s*(\d+)\s*(?:CP|CPR|COM|COMP|COMPR|COMPRIMIDOS?|CAP|CAPS|CAPSULAS?)?\b/)
+    || text.match(/\b(\d+)\s*X\s*(\d+)\s*(?:CP|CPR|COM|COMP|COMPR|COMPRIMIDOS?|CAP|CAPS|CAPSULAS?)\b/)
   const packPatterns = [
     /\bC\s*\/\s*(\d+)\b/,
     /\bBL(?:ISTER)?\s*X?\s*(\d+)\b/,
     /\b(\d+)\s*(?:CP|CPR|COM|COMP|COMPR|COMPRIMIDOS?|CAP|CAPS|CAPSULAS?|DRG|SACH|AMP|UN)\b/,
   ]
   const packMatch = packPatterns.map((pattern) => text.match(pattern)).find(Boolean)
-  const pack = packMatch ? Number(packMatch[1]) : null
+  const pack = multipliedPackMatch ? Number(multipliedPackMatch[1]) * Number(multipliedPackMatch[2]) : packMatch ? Number(packMatch[1]) : null
   const form = FORM_ALIASES.find(([, pattern]) => pattern.test(text))?.[0] || null
   const release = metoprololSuccinate || /\b(L\s*\.?\s*P|XR|ER|RETARD|PROL|PROLONGAD[AO]S?)\b|\bLIB(?:ERACAO)?\s+PROL(?:ONGADA)?\b/.test(text) ? 'extended' : 'immediate'
   const doseTokens = uniqueSorted([...text.matchAll(/(\d+(?:\.\d+)?)\s*(MCG|MG|G|UI|MUI|%)(?:\s*\/\s*(ML|G|DOSE))?/g)].map((match) => `${Number(match[1])}${match[2]}${match[3] ? `/${match[3]}` : ''}`))
   const sizeTokens = uniqueSorted([...text.matchAll(/(\d+(?:\.\d+)?)\s*(ML|G)\b/g)].map((match) => `${Number(match[1])}${match[2]}`).filter((token) => !doseTokens.includes(token)))
   const supplierTokens = new Set(normalizeProductName(supplier).split(' ').filter(Boolean))
   const ingredientText = text
+    .replace(/\b\d+\s*(?:BL|BLT|BLISTER|BX)\s*X?\s*\d+\s*(?:CP|CPR|COM|COMP|COMPR|COMPRIMIDOS?|CAP|CAPS|CAPSULAS?)?\b/g, ' ')
+    .replace(/\b\d+\s*X\s*\d+\s*(?:CP|CPR|COM|COMP|COMPR|COMPRIMIDOS?|CAP|CAPS|CAPSULAS?)\b/g, ' ')
     .replace(/\bC\s*\/\s*\d+\b/g, ' ')
     .replace(/\bBL(?:ISTER)?\s*X?\s*\d+\b/g, ' ')
     .replace(/\b\d+\s*(?:CP|CPR|COM|COMP|COMPR|COMPRIMIDOS?|CAP|CAPS|CAPSULAS?|DRG|SACH|AMP|UN)\b/g, ' ')
@@ -431,9 +525,32 @@ export function calculateOrder(cotacoes, pedido, ajustesManuais = {}, productLin
   })
 }
 
-export async function readSpreadsheet(file) {
+export function selectSpreadsheetMatrix(matrices, kind = '') {
+  const requirements = {
+    cotacao: [['ean'], ['nome'], ['precoUnit']],
+    pedido: [['ean', 'codigo'], ['nome'], ['quantidade']],
+    historico: [['ean'], ['precoCusto']],
+    dcb: [['ean'], ['dcb']],
+  }
+  const ranked = matrices.map((matrix, index) => {
+    if (!matrix.length) return { matrix, index, score: -Infinity }
+    const headerIndex = detectHeaderRow(matrix)
+    const headers = (matrix[headerIndex] || []).map((header) => String(header || '').trim())
+    const rows = matrix.slice(headerIndex + 1).filter((row) => row.some((cell) => String(cell || '').trim()))
+    const mapping = autoMapColumns(headers, rows)
+    const groups = requirements[kind] || Object.keys(mapping).map((key) => [key])
+    const matchedGroups = groups.filter((group) => group.some((key) => mapping[key] !== undefined)).length
+    const complete = groups.length > 0 && matchedGroups === groups.length
+    const score = (complete ? 10000 : 0) + matchedGroups * 1000 - headerIndex / 10000
+    return { matrix, index, score }
+  })
+  ranked.sort((first, second) => second.score - first.score || first.index - second.index)
+  return ranked[0]?.matrix || []
+}
+
+export async function readSpreadsheet(file, kind = '') {
   const XLSX = await import('xlsx')
   const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' })
   const matrices = workbook.SheetNames.map((name) => XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: '', blankrows: false }))
-  return matrices.sort((first, second) => second.length - first.length)[0] || []
+  return selectSpreadsheetMatrix(matrices, kind)
 }
