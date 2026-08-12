@@ -1,12 +1,12 @@
 {
-  "id": "/",
+  "id": ".",
   "name": "Utilitários - Drogaria Center",
   "short_name": "Utilitários DC",
   "description": "Utilitários internos da Drogaria Center para conciliação financeira, cartazes de oferta e compras.",
   "lang": "pt-BR",
   "dir": "ltr",
-  "start_url": "/",
-  "scope": "/",
+  "start_url": ".",
+  "scope": ".",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#fff8f8",
@@ -14,19 +14,19 @@
   "categories": ["business", "productivity", "finance"],
   "icons": [
     {
-      "src": "/pwa/icon-192.png",
+      "src": "pwa/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/pwa/icon-512.png",
+      "src": "pwa/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/pwa/maskable-512.png",
+      "src": "pwa/maskable-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
@@ -37,22 +37,22 @@
       "name": "Conciliação Trier",
       "short_name": "Conciliação",
       "description": "Abrir a conciliação financeira.",
-      "url": "/conciliacao-trier",
-      "icons": [{ "src": "/pwa/icon-192.png", "sizes": "192x192" }]
+      "url": "conciliacao-trier",
+      "icons": [{ "src": "pwa/icon-192.png", "sizes": "192x192" }]
     },
     {
       "name": "Cartazes de oferta",
       "short_name": "Cartazes",
       "description": "Criar cartazes de oferta.",
-      "url": "/cartazes-oferta",
-      "icons": [{ "src": "/pwa/icon-192.png", "sizes": "192x192" }]
+      "url": "cartazes-oferta",
+      "icons": [{ "src": "pwa/icon-192.png", "sizes": "192x192" }]
     },
     {
       "name": "Cotação de medicamentos",
       "short_name": "Cotação",
       "description": "Abrir a cotação de fornecedores.",
-      "url": "/cotacao-medicamentos",
-      "icons": [{ "src": "/pwa/icon-192.png", "sizes": "192x192" }]
+      "url": "cotacao-medicamentos",
+      "icons": [{ "src": "pwa/icon-192.png", "sizes": "192x192" }]
     }
   ]
 }

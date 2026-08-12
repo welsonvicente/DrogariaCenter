@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { COTACAO_STORAGE_KEY, autoMapColumns, buildProductSignature, calculateOrder, compareProductNames, createOrderLineId, detectHeaderRow, ensureOrderLineIds, evaluatePriceOpportunity, findPriceHistoryReference, formatBRL, getOfferComparisonStatus, matchesProductSearch, normalizeEan, normalizeHeader, parseDcbCatalog, parsePriceHistory, productLinkId, readSpreadsheet, supplierFromFilename, toNumber } from './cotacao.js'
 
+const assetPath = (path) => `${import.meta.env.BASE_URL}${String(path).replace(/^\/+/, '')}`
+
 function storedData() {
   try {
     const saved = JSON.parse(localStorage.getItem(COTACAO_STORAGE_KEY)) || {}
@@ -534,7 +536,7 @@ export default function CotacaoScreen({ onBack }) {
   }
 
   return <main className="app-shell quote-shell"><div className="brand-glow brand-glow-one" /><div className="app-container">
-    <header className="home-topbar"><button className="back-button" onClick={onBack}>← Todos os sistemas</button><div className="brand-logo-wrap"><img className="brand-logo" src="/drogaria-center-logo.png" alt="Drogaria Center" /></div></header>
+    <header className="home-topbar"><button className="back-button" onClick={onBack}>← Todos os sistemas</button><div className="brand-logo-wrap"><img className="brand-logo" src={assetPath('drogaria-center-logo.png')} alt="Drogaria Center" /></div></header>
     <section className="quote-heading"><div><p className="brand-kicker">Compras inteligentes</p><h1>Cotação de medicamentos</h1><p>Compare fornecedores, encontre o menor preço por item e monte um pedido de compra mais econômico.</p></div><span className="poster-live"><i />Dados salvos neste dispositivo</span></section>
     <section className="quote-actions no-print"><label className="quote-primary-button">{loading === 'cotacao' ? 'Lendo planilha...' : '↑ Importar fornecedor'}<input type="file" accept=".xls,.xlsx" onChange={(event) => startImport('cotacao', event.target.files?.[0])} /></label><label className="quote-secondary-button">{loading === 'pedido' ? 'Lendo planilha...' : '↑ Importar pedido'}<input type="file" accept=".xls,.xlsx" onChange={(event) => startImport('pedido', event.target.files?.[0])} /></label><DownloadCsv data={exportRows} name="cotacao_drogaria_center.csv">⇩ Exportar aba</DownloadCsv><button className="quote-danger-button" onClick={() => setClearOpen(true)}>Limpar dados</button></section>
     <section className="quote-dcb-panel no-print"><div><span className="section-kicker">Base de equivalência DCB</span><b>{dcbInfo ? `${dcbInfo.total} EANs prontos para comparar por princípio ativo` : 'Importe a tabela EAN → DCB'}</b><small>{dcbInfo ? `${dcbInfo.fileName} · produtos com o mesmo DCB disputarão automaticamente o menor preço` : 'A base é opcional. Sem ela, o sistema continua usando EAN e descrição.'}</small></div><div><label className="quote-dcb-upload">{loading === 'dcb' ? 'Lendo base...' : dcbInfo ? '↥ Atualizar DCB' : '↥ Importar DCB'}<input type="file" accept=".xls,.xlsx" onChange={(event) => { startImport('dcb', event.target.files?.[0]); event.target.value = '' }} /></label>{dcbInfo && <button type="button" className="quote-history-clear" onClick={clearDcbCatalog}>Remover base</button>}</div></section>
@@ -560,7 +562,7 @@ export default function CotacaoScreen({ onBack }) {
     {supplierToRemove && <div className="quote-modal-backdrop"><section className="quote-modal"><h2>Excluir tabela de {supplierToRemove}?</h2><p>As ofertas desse fornecedor serão removidas da comparação. Seu pedido continuará salvo.</p><div><button type="button" className="quote-secondary-button" onClick={() => setSupplierToRemove('')}>Cancelar</button><button type="button" className="quote-danger-solid" onClick={() => removeSupplier(supplierToRemove)}>Excluir fornecedor</button></div></section></div>}
     {clearLinksOpen && <div className="quote-modal-backdrop"><section className="quote-modal"><span className="section-kicker">Correspondências salvas</span><h2>Limpar todos os vínculos?</h2><p>Confirmações e rejeições feitas por nome serão apagadas. EANs exatos e correspondências automáticas continuarão funcionando.</p><div><button type="button" className="quote-secondary-button" onClick={() => setClearLinksOpen(false)}>Cancelar</button><button type="button" className="quote-danger-solid" onClick={clearProductLinks}>Limpar vínculos</button></div></section></div>}
     {clearOpen && <div className="quote-modal-backdrop"><section className="quote-modal"><h2>Limpar dados?</h2><p>As cotações e o pedido salvos neste dispositivo serão apagados.</p><div><button className="quote-secondary-button" onClick={() => setClearOpen(false)}>Cancelar</button><button className="quote-danger-button" onClick={clearData}>Sim, limpar</button></div></section></div>}
-    <footer className="app-footer"><img src="/drogaria-center-logo.png" alt="Drogaria Center" /><span>Cotações organizadas para uma compra mais eficiente.</span></footer>
+    <footer className="app-footer"><img src={assetPath('drogaria-center-logo.png')} alt="Drogaria Center" /><span>Cotações organizadas para uma compra mais eficiente.</span></footer>
   </div></main>
 }
 

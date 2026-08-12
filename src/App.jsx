@@ -7,7 +7,10 @@ import {
 
 const EMPTY_FILES = { trier: null, pagpix: null, cielo: null, fechamento: null }
 const ANALYST_MARKERS_STORAGE_KEY = 'drogaria-center:trier:analyst-markers:v1'
-const SYSTEM_PATHS = { home: '/', trier: '/conciliacao-trier', cartazes: '/cartazes-oferta', cotacao: '/cotacao-medicamentos' }
+const APP_BASE_PATH = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`
+const SYSTEM_ROUTES = { home: '', trier: 'conciliacao-trier', cartazes: 'cartazes-oferta', cotacao: 'cotacao-medicamentos' }
+const assetPath = (path) => `${APP_BASE_PATH}${String(path).replace(/^\/+/, '')}`
+const systemPath = (system) => `${APP_BASE_PATH}${SYSTEM_ROUTES[system]}`
 const SOURCES = {
   trier: { title: 'Relação de Vendas (Trier)', hint: 'Base principal — obrigatório', color: 'bg-ink', step: '01', badge: 'Obrigatório' },
   pagpix: { title: 'Relatório Detalhado PaggPix', hint: 'Recebimentos PIX', color: 'bg-teal', step: '02', badge: 'PIX' },
@@ -16,8 +19,11 @@ const SOURCES = {
 }
 
 function systemFromPathname(pathname) {
-  const normalizedPath = pathname.replace(/\/+$/, '') || '/'
-  return Object.entries(SYSTEM_PATHS).find(([, path]) => path === normalizedPath)?.[0] || 'home'
+  const baseWithoutTrailingSlash = APP_BASE_PATH.replace(/\/$/, '')
+  const isInsideBase = !baseWithoutTrailingSlash || pathname === baseWithoutTrailingSlash || pathname.startsWith(`${baseWithoutTrailingSlash}/`)
+  const relativePath = isInsideBase ? pathname.slice(baseWithoutTrailingSlash.length) : pathname
+  const normalizedRoute = relativePath.replace(/^\/+|\/+$/g, '')
+  return Object.entries(SYSTEM_ROUTES).find(([, route]) => route === normalizedRoute)?.[0] || 'home'
 }
 
 function FileSlot({ source, file, onFile }) {
@@ -317,12 +323,12 @@ function PwaInstallButton() {
     if (choice.outcome === 'accepted') setInstallPrompt(null)
   }
 
-  return <button type="button" className="pwa-install-button" onClick={install}><img src="/pwa/favicon-32.png" alt="" />Instalar aplicativo</button>
+  return <button type="button" className="pwa-install-button" onClick={install}><img src={assetPath('pwa/favicon-32.png')} alt="" />Instalar aplicativo</button>
 }
 
 function HomeScreen({ onSelect }) {
   return <main className="app-shell home-shell"><div className="brand-glow brand-glow-one" /><div className="brand-glow brand-glow-two" /><div className="app-container">
-    <header className="home-topbar"><div className="brand-logo-wrap"><img className="brand-logo" src="/drogaria-center-logo.png" alt="Drogaria Center" /></div><div className="home-topbar-actions"><PwaInstallButton /><div className="local-chip home-chip"><span />Sistemas internos</div></div></header>
+    <header className="home-topbar"><div className="brand-logo-wrap"><img className="brand-logo" src={assetPath('drogaria-center-logo.png')} alt="Drogaria Center" /></div><div className="home-topbar-actions"><PwaInstallButton /><div className="local-chip home-chip"><span />Sistemas internos</div></div></header>
     <section className="home-hero"><p className="brand-kicker">Utilitários - Drogaria Center</p><h1>Olá! O que vamos<br />fazer hoje?</h1><p>Escolha uma ferramenta para começar. Tudo foi pensado para tornar a rotina da farmácia mais simples.</p></section>
     <section className="system-grid" aria-label="Sistemas disponíveis">
       <button className="system-card system-card-reconcile" onClick={() => onSelect('trier')}><span className="system-icon" aria-hidden="true">↔</span><span className="system-label">Financeiro</span><strong>Conciliação Trier</strong><small>Compare vendas, PIX e cartões em um só lugar.</small><span className="system-action">Abrir conciliação <b aria-hidden="true">→</b></span></button>
@@ -330,7 +336,7 @@ function HomeScreen({ onSelect }) {
       <button className="system-card system-card-quotes" onClick={() => onSelect('cotacao')}><span className="system-icon" aria-hidden="true">⌁</span><span className="system-label">Compras</span><strong>Cotação de medicamentos</strong><small>Compare fornecedores e escolha o melhor preço para cada item do pedido.</small><span className="system-action">Abrir cotação <b aria-hidden="true">→</b></span></button>
     </section>
     <p className="home-support">Mais ferramentas serão adicionadas aqui conforme a operação da Drogaria Center evoluir.</p>
-    <footer className="app-footer"><img src="/drogaria-center-logo.png" alt="Drogaria Center" /><span>Ferramentas simples para a rotina da farmácia.</span></footer>
+    <footer className="app-footer"><img src={assetPath('drogaria-center-logo.png')} alt="Drogaria Center" /><span>Ferramentas simples para a rotina da farmácia.</span></footer>
   </div></main>
 }
 
@@ -548,7 +554,7 @@ function CartazesScreen({ onBack }) {
     const image = new Image()
     image.onload = () => setBackground(image)
     image.onerror = () => setRenderError('Não foi possível carregar o modelo oficial do cartaz.')
-    image.src = '/oferta-background.png'
+      image.src = assetPath('oferta-background.png')
   }, [])
 
   const normalizedIndividualQuantity = Math.max(1, Math.min(999, Math.round(Number(individualQuantity) || 1)))
@@ -630,11 +636,11 @@ function CartazesScreen({ onBack }) {
   }
 
   return <main className="app-shell home-shell"><div className="brand-glow brand-glow-one" /><div className="brand-glow brand-glow-two" /><div className="app-container">
-    <header className="home-topbar"><button className="back-button" onClick={onBack}>← Todos os sistemas</button><div className="brand-logo-wrap"><img className="brand-logo" src="/drogaria-center-logo.png" alt="Drogaria Center" /></div></header>
+    <header className="home-topbar"><button className="back-button" onClick={onBack}>← Todos os sistemas</button><div className="brand-logo-wrap"><img className="brand-logo" src={assetPath('drogaria-center-logo.png')} alt="Drogaria Center" /></div></header>
     <section className="poster-heading"><div><p className="brand-kicker">Comunicação visual</p><h1>Gerador de cartazes de oferta</h1><p>Crie um cartaz individual ou importe uma planilha para montar várias ofertas de uma vez.</p></div><span className="poster-live"><i />Prévia ao vivo</span></section>
     <div className="poster-mode-toggle" role="tablist" aria-label="Modo de criação"><button role="tab" aria-selected={mode === 'individual'} className={mode === 'individual' ? 'active' : ''} onClick={() => setMode('individual')}>Cartaz individual</button><button role="tab" aria-selected={mode === 'batch'} className={mode === 'batch' ? 'active' : ''} onClick={() => setMode('batch')}>Lote por XLS</button></div>
     {mode === 'individual' ? <section className="poster-studio"><form className="poster-form" onSubmit={(event) => event.preventDefault()}><div className="poster-form-title"><span className="future-icon" aria-hidden="true">✦</span><div><span className="section-kicker">Dados da oferta</span><h2>Monte seu cartaz</h2></div></div><label>Nome do produto<textarea value={values.product} maxLength="70" onChange={(event) => setValues((current) => ({ ...current, product: event.target.value }))} placeholder="Ex.: SONRIDOR RAPID+FORTE 4CP REV" /></label><div className="price-fields"><label>Preço anterior<input inputMode="decimal" value={values.oldPrice} onChange={(event) => setValues((current) => ({ ...current, oldPrice: event.target.value }))} placeholder="7,99" /></label><label>Preço da oferta<input inputMode="decimal" value={values.price} onChange={(event) => setValues((current) => ({ ...current, price: event.target.value }))} placeholder="1,99" /></label></div><div className="individual-print-settings"><label>Quantidade de cartazes<input type="number" min="1" max="999" step="1" value={individualQuantity} onChange={(event) => { setIndividualQuantity(event.target.value); setIndividualPage(0) }} onBlur={() => setIndividualQuantity(normalizedIndividualQuantity)} /></label><label className="items-per-page">Tamanho na folha A4<select value={individualItemsPerPage} onChange={(event) => { setIndividualItemsPerPage(Number(event.target.value)); setIndividualPage(0) }}><option value="2">2 por página · maior</option><option value="4">4 por página · grande</option><option value="6">6 por página · médio</option><option value="8">8 por página · pequeno</option><option value="10">10 por página · menor</option><option value="12">12 por página · compacto</option></select></label></div><p className="poster-tip">O PDF inclui todas as cópias em folhas A4. PNG e JPG baixam a página exibida na prévia.</p><div className="download-actions"><button type="button" disabled={!background} onClick={() => downloadPoster('pdf')}>⇩ PDF completo</button><button type="button" disabled={!background} onClick={() => downloadPoster('png')}>⇩ PNG da página</button><button type="button" disabled={!background} onClick={() => downloadPoster('jpg')}>⇩ JPG da página</button></div>{renderError && <p className="poster-error" role="alert">{renderError}</p>}</form><section className="poster-preview-panel"><div className="poster-preview-label"><span>Prévia da folha A4</span><small>A4 {individualOrientation} · {individualItemsPerPage} por página · Página {individualPage + 1} de {totalIndividualPages}</small></div><div className="poster-canvas-wrap individual-a4-canvas-wrap"><canvas ref={canvasRef} aria-label="Prévia da folha A4 com cartazes de oferta" /></div><div className="batch-pagination"><button type="button" disabled={individualPage === 0} onClick={() => setIndividualPage((page) => page - 1)}>← Anterior</button><span>{visibleIndividualCount} cartazes nesta página</span><button type="button" disabled={individualPage + 1 >= totalIndividualPages} onClick={() => setIndividualPage((page) => page + 1)}>Próxima →</button></div></section></section> : <section className="poster-studio batch-studio"><form className="poster-form" onSubmit={(event) => event.preventDefault()}><div className="poster-form-title"><span className="future-icon" aria-hidden="true">▦</span><div><span className="section-kicker">Lote de ofertas</span><h2>Importe sua planilha</h2></div></div><label className="batch-upload">{batchLoading ? 'Lendo a planilha...' : 'Selecionar arquivo XLS ou XLSX'}<input type="file" accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => importOffers(event.target.files?.[0])} /></label>{batchFileName && <div className="batch-file-status"><b>{batchFileName}</b><span>{batchOffers.length} ofertas identificadas</span></div>}<label className="items-per-page">Cartazes por página<select value={itemsPerPage} onChange={(event) => { setItemsPerPage(Number(event.target.value)); setBatchPage(0) }}><option value="1">1 por página</option><option value="2">2 por página</option><option value="4">4 por página</option><option value="6">6 por página</option><option value="8">8 por página (referência)</option><option value="9">9 por página</option><option value="10">10 por página</option><option value="12">12 por página</option></select></label><p className="poster-tip">O XLS enviado foi reconhecido pelas colunas Produto, Vlr.Promoção e Preço Normal.</p><div className="download-actions"><button type="button" disabled={!background || !batchOffers.length || batchExporting} onClick={() => downloadBatch('pdf')}>{batchExporting ? 'Gerando arquivo...' : '⇩ Baixar PDF completo'}</button><button type="button" disabled={!background || !batchOffers.length || batchExporting} onClick={() => downloadBatch('png')}>⇩ Baixar PNG da página</button></div>{renderError && <p className="poster-error" role="alert">{renderError}</p>}</form><section className="poster-preview-panel"><div className="poster-preview-label"><span>Prévia do lote</span><small>{batchOffers.length ? `Página ${batchPage + 1} de ${totalBatchPages}` : 'Aguardando planilha'}</small></div>{batchOffers.length ? <><div className="poster-canvas-wrap batch-canvas-wrap"><canvas ref={batchCanvasRef} aria-label="Prévia da página de cartazes" /></div><div className="batch-pagination"><button type="button" disabled={batchPage === 0} onClick={() => setBatchPage((page) => page - 1)}>← Anterior</button><span>{visibleBatchOffers.length} cartazes nesta página</span><button type="button" disabled={batchPage + 1 >= totalBatchPages} onClick={() => setBatchPage((page) => page + 1)}>Próxima →</button></div></> : <div className="batch-empty"><span>▦</span><b>Envie uma planilha para visualizar o lote.</b><small>Você poderá escolher quantos cartazes saem em cada página.</small></div>}</section></section>}
-    <footer className="app-footer"><img src="/drogaria-center-logo.png" alt="Drogaria Center" /><span>Cartazes de oferta prontos para imprimir.</span></footer>
+    <footer className="app-footer"><img src={assetPath('drogaria-center-logo.png')} alt="Drogaria Center" /><span>Cartazes de oferta prontos para imprimir.</span></footer>
   </div></main>
 }
 
@@ -733,7 +739,7 @@ export default function App() {
   }, [])
 
   function navigateTo(system) {
-    const path = SYSTEM_PATHS[system]
+    const path = systemPath(system)
     if (window.location.pathname !== path) window.history.pushState({ system }, '', path)
     setActiveSystem(system)
     window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -745,7 +751,7 @@ export default function App() {
 
   return <main className="app-shell"><div className="brand-glow brand-glow-one" /><div className="brand-glow brand-glow-two" /><div className="app-container">
     <header className="brand-header">
-      <div className="brand-topline"><div className="brand-logo-wrap"><img className="brand-logo" src="/drogaria-center-logo.png" alt="Drogaria Center" /></div><div className="local-chip"><span />Processamento local</div></div>
+      <div className="brand-topline"><div className="brand-logo-wrap"><img className="brand-logo" src={assetPath('drogaria-center-logo.png')} alt="Drogaria Center" /></div><div className="local-chip"><span />Processamento local</div></div>
       <div className="brand-content"><button className="back-button no-print" onClick={() => navigateTo('home')}>← Todos os sistemas</button><p className="brand-kicker">Conciliação financeira</p><h1>Vendas e recebimentos,<br />lado a lado.</h1><p className="sub">Cruze os relatórios Trier, PaggPix e Cielo com rapidez e encontre diferenças antes do fechamento.</p></div>
       <div className="hero-mark" aria-hidden="true">+</div>
     </header>
@@ -760,6 +766,6 @@ export default function App() {
       {tab === 'resumo' && <div className="summary-card">Das <b>{counts.total}</b> vendas eletrônicas da Relação de Vendas, <b className="text-green">{counts.reconciled}</b> foram conciliadas, <b className="text-amber">{counts.divergent}</b> tiveram divergência de valor dentro da tolerância e <b className="text-rust">{counts.missing}</b> não encontraram recebimento correspondente.{noSale.length > 0 && <><br /><br />Também foram encontrados <b className="text-rust">{noSale.length}</b> recebimentos sem venda correspondente, sendo <b>{counts.duplicates}</b> identificados como possível duplicidade.</>}{crediarioCartao.length > 0 && <><br /><br /><b className="text-green">{crediarioCartao.length}</b> recebimento(s) da Cielo, somando <b>{formatMoney(crediarioCartao.reduce((sum, row) => sum + row.valor, 0))}</b>, foram identificados como <b>Contas Recebidas Crediário (Cartão)</b> pelo Fechamento de Caixa.</>}{counts.returns > 0 && <><br /><br /><b>{counts.returns}</b> linha(s) de devolução não entraram na conciliação, pois não representam recebimento a buscar.</>}<br /><br />Use as abas para revisar cada grupo ou exporte a tabela final em Excel, CSV ou PDF.</div>}
       {tab === 'conciliada' && <SalesTable rows={results.filter((row) => row.status === 'CONCILIADA')} />}{tab === 'divergencia' && <SalesTable rows={results.filter((row) => row.status === 'DIVERGENCIA')} />}{tab === 'sem_recebimento' && <SalesTable rows={results.filter((row) => row.status === 'SEM_RECEBIMENTO')} markers={analystMarkers} onToggleMarker={toggleAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_recebimento" />}{tab === 'devolucao' && <SalesTable rows={results.filter((row) => row.status === 'DEVOLUCAO')} />}{tab === 'sem_venda' && <NoSaleTable rows={noSale} markers={analystMarkers} onToggleMarker={toggleAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_venda" />}{tab === 'crediario_cartao' && <><ClosingCreditSummary groups={fechamentoCrediario} /><NoSaleTable rows={crediarioCartao} /></>}
     </section>}
-    <footer className="app-footer"><img src="/drogaria-center-logo.png" alt="Drogaria Center" /><span>Conciliação segura, simples e local.</span></footer>
+    <footer className="app-footer"><img src={assetPath('drogaria-center-logo.png')} alt="Drogaria Center" /><span>Conciliação segura, simples e local.</span></footer>
   </div></main>
 }

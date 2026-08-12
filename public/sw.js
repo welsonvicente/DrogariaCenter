@@ -1,17 +1,19 @@
-const CACHE_VERSION = 'utilitarios-dc-v1'
+const CACHE_VERSION = 'utilitarios-dc-v2'
 const CORE_CACHE = `${CACHE_VERSION}-core`
 const RUNTIME_CACHE = `${CACHE_VERSION}-runtime`
+const BASE_PATH = new URL('./', self.location.href).pathname
+const appAsset = (path = '') => `${BASE_PATH}${path.replace(/^\/+/, '')}`
 const CORE_ASSETS = [
-  '/',
-  '/index.html',
-  '/manifest.webmanifest',
-  '/drogaria-center-logo.png',
-  '/oferta-background.png',
-  '/pwa/icon-192.png',
-  '/pwa/icon-512.png',
-  '/pwa/maskable-512.png',
-  '/pwa/apple-touch-icon.png',
-  '/pwa/favicon-32.png',
+  appAsset(),
+  appAsset('index.html'),
+  appAsset('manifest.webmanifest'),
+  appAsset('drogaria-center-logo.png'),
+  appAsset('oferta-background.png'),
+  appAsset('pwa/icon-192.png'),
+  appAsset('pwa/icon-512.png'),
+  appAsset('pwa/maskable-512.png'),
+  appAsset('pwa/apple-touch-icon.png'),
+  appAsset('pwa/favicon-32.png'),
 ]
 
 self.addEventListener('install', (event) => {
@@ -37,7 +39,7 @@ self.addEventListener('fetch', (event) => {
       const copy = response.clone()
       caches.open(RUNTIME_CACHE).then((cache) => cache.put(request, copy))
       return response
-    }).catch(async () => (await caches.match(request)) || (await caches.match('/index.html')) || (await caches.match('/'))))
+    }).catch(async () => (await caches.match(request)) || (await caches.match(appAsset('index.html'))) || (await caches.match(appAsset()))))
     return
   }
 
