@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import CotacaoScreen from './CotacaoScreen.jsx'
+import { clearReconciliationSession, loadReconciliationSession, saveReconciliationSession } from './browserStorage.js'
 import {
-  extractPdfLines, findHighDiscountSales, formatMoney, operatorName, parseCieloLines, parseFechamentoLines, parsePagPixLines,
-  parsePagPixSpreadsheet, parseTrierLines, parseTrierSpreadsheet, reconcile, STATUS_LABEL,
+  extractPdfLines, findHighDiscountSales, formatMoney, OPERADORES, operatorName, parseCieloLines, parseFechamentoLines, parsePagPixLines,
+  parsePagPixSpreadsheet, parseTrierLines, parseTrierSpreadsheet, reconcile, resolveOperator, STATUS_LABEL,
 } from './reconciliation.js'
 
 const EMPTY_FILES = { trier: null, pagpix: null, cielo: null, fechamento: null }
 const ANALYST_MARKERS_STORAGE_KEY = 'drogaria-center:trier:analyst-markers:v1'
+const STAFF_STORAGE_KEY = 'drogaria-center:trier:staff-directory:v1'
 const APP_BASE_PATH = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`
 const SYSTEM_ROUTES = { home: '', trier: 'conciliacao-trier', cartazes: 'cartazes-oferta', cotacao: 'cotacao-medicamentos' }
 const assetPath = (path) => `${APP_BASE_PATH}${String(path).replace(/^\/+/, '')}`
@@ -16,6 +18,47 @@ const SOURCES = {
   pagpix: { title: 'Relatório Detalhado PaggPix', hint: 'Recebimentos PIX', color: 'bg-teal', step: '02', badge: 'PIX' },
   cielo: { title: 'Relatório Detalhado Cielo', hint: 'Recebimentos cartão', color: 'bg-amber', step: '03', badge: 'Cartão' },
   fechamento: { title: 'Fechamento de Caixa', hint: 'Opcional', color: 'bg-muted', step: '04', badge: 'Opcional' },
+}
+
+const DEFAULT_STAFF = Object.entries(OPERADORES).map(([trierCode, name]) => ({
+  id: `trier-${trierCode}`,
+  name,
+  trierCode,
+  pagpixAliases: [name],
+  active: true,
+}))
+
+function loadStaffDirectory() {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(STAFF_STORAGE_KEY) || 'null')
+    if (Array.isArray(saved) && saved.length) return saved.map((person) => ({ ...person, pagpixAliases: Array.isArray(person.pagpixAliases) ? person.pagpixAliases : [], active: person.active !== false }))
+  } catch { /* usa a equipe inicial */ }
+  return DEFAULT_STAFF
+}
+
+function staffForRow(row, source, staff) {
+  return resolveOperator(row, source, staff)
+}
+
+function staffNameForRow(row, source, staff) {
+  const person = staffForRow(row, source, staff)
+  if (person) return `${person.name}${person.trierCode ? ` · nº ${person.trierCode}` : ''}${person.active === false ? ' · inativo' : ''}`
+  return row?.operador ? operatorName(row.operador) : 'Não identificado'
+}
+
+function minutesFromTime(value) {
+  const match = String(value ?? '').match(/^(\d{1,2}):(\d{2})/)
+  return match ? Number(match[1]) * 60 + Number(match[2]) : null
+}
+
+function timeIsInRange(value, start, end) {
+  const current = minutesFromTime(value)
+  const startMinutes = minutesFromTime(start)
+  const endMinutes = minutesFromTime(end)
+  if (current === null) return !start && !end
+  if (startMinutes === null && endMinutes === null) return true
+  if (startMinutes !== null && endMinutes !== null && startMinutes > endMinutes) return current >= startMinutes || current <= endMinutes
+  return (startMinutes === null || current >= startMinutes) && (endMinutes === null || current <= endMinutes)
 }
 
 function systemFromPathname(pathname) {
@@ -154,7 +197,62 @@ function ReorderableColumnHeader({ column, index, total, onMove, onShift }) {
   </th>
 }
 
-function ReviewToolbar({ rows, markers, reviewFilter, onReviewFilter, onSetAll }) {
+function StaffDirectory({ staff, onSave, onToggleActive }) {
+  const emptyForm = { id: '', name: '', trierCode: '', pagpixAliases: '' }
+  const [form, setForm] = useState(emptyForm)
+  const [message, setMessage] = useState('')
+  const activeCount = staff.filter((person) => person.active !== false).length
+
+  function submit(event) {
+    event.preventDefault()
+    const name = form.name.trim()
+    const trierCode = form.trierCode.trim()
+    const aliases = form.pagpixAliases.split(/[,;\n]/).map((alias) => alias.trim()).filter(Boolean)
+    if (!name || !trierCode) { setMessage('Informe o nome e o número usado na Trier.'); return }
+    if (!/^\d{1,4}$/.test(trierCode)) { setMessage('O número da Trier deve conter apenas dígitos.'); return }
+    if (staff.some((person) => person.id !== form.id && String(person.trierCode) === trierCode)) { setMessage('Esse número da Trier já pertence a outro vendedor.'); return }
+    onSave({ id: form.id || `staff-${Date.now()}`, name, trierCode, pagpixAliases: aliases.length ? aliases : [name], active: true })
+    setForm(emptyForm)
+    setMessage('Cadastro salvo. A identificação foi atualizada nos relatórios já importados.')
+  }
+
+  function edit(person) {
+    setForm({ id: person.id, name: person.name, trierCode: String(person.trierCode ?? ''), pagpixAliases: (person.pagpixAliases ?? []).join(', ') })
+    setMessage('')
+  }
+
+  return <details className="staff-directory no-print">
+    <summary><span className="staff-directory-icon">♟</span><span><b>Equipe e identificação dos vendedores</b><small>{activeCount} ativo(s) · relacione o número da Trier ao nome exibido no PaggPix</small></span><strong>Gerenciar equipe</strong></summary>
+    <div className="staff-directory-body">
+      <form className="staff-form" onSubmit={submit}>
+        <div className="staff-form-heading"><div><span className="section-kicker">Cadastro local</span><b>{form.id ? 'Editar vendedor' : 'Adicionar vendedor'}</b></div>{form.id && <button type="button" onClick={() => { setForm(emptyForm); setMessage('') }}>Cancelar edição</button>}</div>
+        <label>Nome do vendedor<input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder="Ex.: João Victor" /></label>
+        <label>Número na Trier<input inputMode="numeric" value={form.trierCode} onChange={(event) => setForm((current) => ({ ...current, trierCode: event.target.value.replace(/\D/g, '') }))} placeholder="Ex.: 20" /></label>
+        <label>Nome(s) no PaggPix<input value={form.pagpixAliases} onChange={(event) => setForm((current) => ({ ...current, pagpixAliases: event.target.value }))} placeholder="Ex.: João Victor, Joao V." /><small>Separe por vírgula quando o nome aparecer escrito de mais de uma forma.</small></label>
+        <button className="staff-save" type="submit">{form.id ? 'Salvar alterações' : 'Adicionar à equipe'}</button>
+        {message && <p className="staff-message">{message}</p>}
+      </form>
+      <div className="staff-list">{[...staff].sort((a, b) => Number(b.active !== false) - Number(a.active !== false) || a.name.localeCompare(b.name, 'pt-BR')).map((person) => <article className={person.active === false ? 'inactive' : ''} key={person.id}><div><b>{person.name}</b><small>Trier nº {person.trierCode} · PaggPix: {(person.pagpixAliases ?? []).join(', ') || person.name}</small></div><span>{person.active === false ? 'Inativo' : 'Ativo'}</span><button type="button" onClick={() => edit(person)}>Editar</button><button type="button" onClick={() => onToggleActive(person.id)}>{person.active === false ? 'Reativar' : 'Desativar'}</button></article>)}</div>
+    </div>
+  </details>
+}
+
+function SavedReportsPanel({ files, savedAt, restoring, message, onClear }) {
+  const loadedReports = Object.entries(SOURCES).filter(([key]) => files[key])
+  const savedDate = savedAt ? new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(savedAt)) : ''
+
+  return <section className="saved-reports-panel no-print" aria-live="polite">
+    <div className="saved-reports-heading">
+      <span className="saved-reports-icon" aria-hidden="true">↻</span>
+      <div><span className="section-kicker">Histórico no navegador</span><strong>{restoring ? 'Restaurando seus relatórios...' : loadedReports.length ? 'Relatórios salvos automaticamente' : 'Importe uma vez e continue depois'}</strong><small>{loadedReports.length ? `${loadedReports.length} relatório(s) disponível(is) neste navegador${savedDate ? ` · salvo em ${savedDate}` : ''}.` : 'Os próximos relatórios importados ficarão guardados somente neste dispositivo.'}</small></div>
+      {loadedReports.length > 0 && <button type="button" onClick={onClear}>Limpar histórico</button>}
+    </div>
+    {loadedReports.length > 0 && <div className="saved-reports-list">{loadedReports.map(([key, report]) => <article key={key}><span>✓</span><div><b>{SOURCES[key].title}</b><small title={report.fileName}>{report.fileName} · {report.rows?.length ?? 0} linhas</small></div></article>)}</div>}
+    {message && <p className="saved-reports-message">{message}</p>}
+  </section>
+}
+
+function ReviewToolbar({ rows, markers, reviewFilter, onReviewFilter, onSetAll, staff, selectedStaff, onSelectedStaff, timeStart, timeEnd, onTimeStart, onTimeEnd }) {
   const marked = rows.filter((row) => markers[row.__markerKey]).length
   return <div className="analyst-review-toolbar no-print">
     <div className="analyst-review-copy"><span className="analyst-review-icon">✓</span><div><strong>Revisão do analista</strong><small>{marked} de {rows.length} registro(s) marcados como conciliados manualmente. A marcação não altera o resultado automático.</small></div></div>
@@ -166,24 +264,41 @@ function ReviewToolbar({ rows, markers, reviewFilter, onReviewFilter, onSetAll }
       <div className="analyst-review-filters" role="group" aria-label="Filtrar revisão manual">
         {[['all', 'Todos'], ['pending', 'Pendentes'], ['marked', 'Marcados']].map(([key, label]) => <button type="button" key={key} className={reviewFilter === key ? 'active' : ''} onClick={() => onReviewFilter(key)}>{label}</button>)}
       </div>
+      <details className="review-advanced-filters"><summary>Filtrar colaboradores e horário{selectedStaff.length || timeStart || timeEnd ? ` · ${selectedStaff.length} colaborador(es)` : ''}</summary><div className="review-advanced-body"><fieldset><legend>Colaboradores — selecione um ou mais</legend><div className="review-staff-options">{staff.map((person) => <label key={person.id} className={selectedStaff.includes(person.id) ? 'selected' : ''}><input type="checkbox" checked={selectedStaff.includes(person.id)} onChange={() => onSelectedStaff(selectedStaff.includes(person.id) ? selectedStaff.filter((id) => id !== person.id) : [...selectedStaff, person.id])} /><span>{person.name}</span><small>nº {person.trierCode}</small></label>)}</div></fieldset><div className="review-time-range"><label>De<input type="time" value={timeStart} onChange={(event) => onTimeStart(event.target.value)} /></label><label>Até<input type="time" value={timeEnd} onChange={(event) => onTimeEnd(event.target.value)} /></label><button type="button" onClick={() => { onSelectedStaff([]); onTimeStart(''); onTimeEnd('') }}>Limpar filtros</button></div></div></details>
     </div>
   </div>
 }
 
-function AnalystMarker({ marker, onToggle }) {
-  return <button type="button" className={marker ? 'analyst-marker marked' : 'analyst-marker'} onClick={onToggle} aria-pressed={Boolean(marker)} title={marker ? 'Clique para reabrir este registro' : 'Marcar que o motivo já foi identificado'}>
-    <span>{marker ? '✓' : '○'}</span>{marker ? 'Conciliado pelo analista' : 'Marcar conciliado'}
+function AnalystMarker({ marker, onOpen, staff }) {
+  const collaborators = (marker?.staffIds ?? []).map((id) => staff.find((person) => person.id === id)?.name).filter(Boolean)
+  const details = [collaborators.join(', '), marker?.resolvedTime, marker?.note].filter(Boolean).join(' · ')
+  return <button type="button" className={marker ? 'analyst-marker marked' : 'analyst-marker'} onClick={onOpen} aria-pressed={Boolean(marker)} title={details || (marker ? 'Editar revisão deste registro' : 'Registrar motivo identificado')}>
+    <span>{marker ? '✓' : '○'}</span><span>{marker ? 'Revisado' : 'Revisar'}{marker && details && <small>{details}</small>}</span>
   </button>
 }
 
-function SalesTable({ rows, markers = {}, onToggleMarker, onSetMarkers, markerKind }) {
+function ReviewEditor({ entry, staff, onSave, onRemove, onClose }) {
+  const marker = entry.marker ?? {}
+  const [staffIds, setStaffIds] = useState(marker.staffIds ?? [])
+  const [resolvedTime, setResolvedTime] = useState(marker.resolvedTime || entry.defaultTime || '')
+  const [note, setNote] = useState(marker.note ?? '')
+  const selectableStaff = staff.filter((person) => person.active !== false || staffIds.includes(person.id))
+  return <div className="review-modal-backdrop no-print" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="review-modal" role="dialog" aria-modal="true" aria-labelledby="review-modal-title"><div className="review-modal-heading"><div><span className="section-kicker">Revisão manual</span><h3 id="review-modal-title">Registrar motivo localizado</h3><p>Essa informação fica salva neste navegador e acompanha as exportações.</p></div><button type="button" onClick={onClose} aria-label="Fechar">×</button></div><form onSubmit={(event) => { event.preventDefault(); onSave(entry.key, { ...marker, markedAt: marker.markedAt || new Date().toISOString(), updatedAt: new Date().toISOString(), staffIds, resolvedTime, note: note.trim() }); onClose() }}><fieldset><legend>Colaboradores envolvidos</legend><div className="review-modal-staff">{selectableStaff.map((person) => <label key={person.id} className={staffIds.includes(person.id) ? 'selected' : ''}><input type="checkbox" checked={staffIds.includes(person.id)} onChange={() => setStaffIds((current) => current.includes(person.id) ? current.filter((id) => id !== person.id) : [...current, person.id])} /><span>{person.name}</span><small>Trier nº {person.trierCode}</small></label>)}</div></fieldset><label>Horário em que o lançamento foi localizado<input type="time" value={resolvedTime} onChange={(event) => setResolvedTime(event.target.value)} /></label><label>Observação<textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Ex.: recebimento localizado no fechamento do caixa seguinte; horário informado incorretamente." /></label><div className="review-modal-actions">{entry.marker && <button className="review-reopen" type="button" onClick={() => { onRemove(entry.key); onClose() }}>Reabrir como pendente</button>}<button type="button" onClick={onClose}>Cancelar</button><button className="review-confirm" type="submit">Salvar como revisado</button></div></form></section></div>
+}
+
+function SalesTable({ rows, markers = {}, onSaveMarker, onRemoveMarker, onSetMarkers, markerKind, staff = DEFAULT_STAFF }) {
   const [filters, setFilters] = useState({})
   const [reviewFilter, setReviewFilter] = useState('all')
+  const [selectedStaff, setSelectedStaff] = useState([])
+  const [timeStart, setTimeStart] = useState('')
+  const [timeEnd, setTimeEnd] = useState('')
+  const [editingReview, setEditingReview] = useState(null)
   const columns = [
     { key: 'sale', label: 'Nº venda', value: (row) => row.sale.numero },
     { key: 'date', label: 'Data', value: (row) => row.sale.data },
     { key: 'saleTime', label: 'Hora venda', value: (row) => row.sale.hora || '—' },
-    { key: 'operator', label: 'Operador', value: (row) => operatorName(row.sale.operador) },
+    { key: 'operator', label: 'Vendedor Trier', value: (row) => staffNameForRow(row.sale, 'Trier', staff) },
+    { key: 'receiptOperator', label: 'Operador PaggPix', value: (row) => row.recebimento && row.fonte === 'PaggPix' ? staffNameForRow(row.recebimento, 'PaggPix', staff) : '—' },
     { key: 'method', label: 'Forma', value: (row) => row.sale.forma || '—' },
     { key: 'channel', label: 'Delivery/Balcão', value: (row) => row.sale.tele === 'Sim' ? 'Delivery' : 'Balcão' },
     { key: 'saleValue', label: 'Valor venda', value: (row) => formatMoney(row.sale.valor) },
@@ -192,26 +307,31 @@ function SalesTable({ rows, markers = {}, onToggleMarker, onSetMarkers, markerKi
     { key: 'receivedTime', label: 'Hora receb.', value: (row) => row.recebimento?.hora || '—' },
     { key: 'difference', label: 'Diferença', value: (row) => row.diff !== undefined ? formatMoney(row.diff) : '—' },
     { key: 'status', label: 'Status', value: (row) => STATUS_LABEL[row.status], render: (row) => <StatusPill status={row.status} /> },
-    ...(markerKind ? [{ key: 'analysis', label: 'Análise', filterable: false, value: () => '', render: (row) => <AnalystMarker marker={markers[row.__markerKey]} onToggle={() => onToggleMarker(row.__markerKey)} /> }] : []),
+    ...(markerKind ? [{ key: 'analysis', label: 'Análise', filterable: false, value: () => '', render: (row) => <AnalystMarker marker={markers[row.__markerKey]} staff={staff} onOpen={() => setEditingReview({ key: row.__markerKey, marker: markers[row.__markerKey], defaultTime: row.sale.hora })} /> }] : []),
   ]
   const { orderedColumns, moveColumn, shiftColumn } = useReorderableColumns(columns, 'drogaria-center:trier:sales-column-order:v1')
   const keyedRows = rowsWithMarkerKeys(rows, markerKind)
   const columnFilteredRows = columnFilter(keyedRows, columns, filters)
-  const filteredRows = markerKind ? columnFilteredRows.filter((row) => reviewFilter === 'all' || (reviewFilter === 'marked') === Boolean(markers[row.__markerKey])) : columnFilteredRows
+  const filteredRows = columnFilteredRows.filter((row) => {
+    if (markerKind && reviewFilter !== 'all' && (reviewFilter === 'marked') !== Boolean(markers[row.__markerKey])) return false
+    const seller = staffForRow(row.sale, 'Trier', staff)
+    if (selectedStaff.length && (!seller || !selectedStaff.includes(seller.id))) return false
+    return timeIsInRange(row.sale.hora, timeStart, timeEnd)
+  })
   if (!rows.length) return <EmptyTable />
-  return <>{markerKind && <ReviewToolbar rows={keyedRows} markers={markers} reviewFilter={reviewFilter} onReviewFilter={setReviewFilter} onSetAll={onSetMarkers} />}<div className="table-meta"><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} registro(s).</div><div className="column-order-hint no-print">⠿ Arraste uma coluna ou use as setas para reorganizar</div></div><Table><thead><tr>{orderedColumns.map((column, index) => <ReorderableColumnHeader key={column.key} column={column} index={index} total={orderedColumns.length} onMove={moveColumn} onShift={shiftColumn} />)}</tr><FilterRow tableId="sales-filter" columns={orderedColumns} rows={keyedRows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
+  return <>{markerKind && <ReviewToolbar rows={keyedRows} markers={markers} reviewFilter={reviewFilter} onReviewFilter={setReviewFilter} onSetAll={onSetMarkers} staff={staff} selectedStaff={selectedStaff} onSelectedStaff={setSelectedStaff} timeStart={timeStart} timeEnd={timeEnd} onTimeStart={setTimeStart} onTimeEnd={setTimeEnd} />}<div className="table-meta"><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} registro(s).</div><div className="column-order-hint no-print">⠿ Arraste uma coluna ou use as setas para reorganizar</div></div><Table><thead><tr>{orderedColumns.map((column, index) => <ReorderableColumnHeader key={column.key} column={column} index={index} total={orderedColumns.length} onMove={moveColumn} onShift={shiftColumn} />)}</tr><FilterRow tableId="sales-filter" columns={orderedColumns} rows={keyedRows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
     {filteredRows.map((row) => { const sale = row.sale; const marker = markers[row.__markerKey]; return <tr className={marker ? 'manually-reconciled' : ''} key={row.__markerKey || `${sale.numero}-${row.status}`}>{orderedColumns.map((column) => <td key={column.key}>{column.render ? column.render(row) : column.value(row)}</td>)}</tr> })}
     {!filteredRows.length && <tr className="empty-row"><td colSpan={orderedColumns.length}>Nenhum registro corresponde aos filtros.</td></tr>}
-  </tbody></Table></>
+  </tbody></Table>{editingReview && <ReviewEditor key={editingReview.key} entry={editingReview} staff={staff} onSave={onSaveMarker} onRemove={onRemoveMarker} onClose={() => setEditingReview(null)} />}</>
 }
 
-function DiscountAuditTable({ rows }) {
+function DiscountAuditTable({ rows, staff = DEFAULT_STAFF }) {
   const [filters, setFilters] = useState({})
   const columns = [
     { key: 'sale', label: 'Nº venda', value: (sale) => sale.numero },
     { key: 'date', label: 'Data', value: (sale) => sale.data },
     { key: 'time', label: 'Hora', value: (sale) => sale.hora || '—' },
-    { key: 'operator', label: 'Operador', value: (sale) => operatorName(sale.operador) },
+    { key: 'operator', label: 'Vendedor Trier', value: (sale) => staffNameForRow(sale, 'Trier', staff) },
     { key: 'method', label: 'Forma', value: (sale) => sale.forma || '—' },
     { key: 'channel', label: 'Delivery/Balcão', value: (sale) => sale.tele === 'Sim' ? 'Delivery' : 'Balcão' },
     { key: 'gross', label: 'Valor bruto', value: (sale) => formatMoney(sale.valorBruto) },
@@ -229,28 +349,37 @@ function DiscountAuditTable({ rows }) {
   </tbody></Table></>
 }
 
-function NoSaleTable({ rows, markers = {}, onToggleMarker, onSetMarkers, markerKind }) {
+function NoSaleTable({ rows, markers = {}, onSaveMarker, onRemoveMarker, onSetMarkers, markerKind, staff = DEFAULT_STAFF }) {
   const [filters, setFilters] = useState({})
   const [reviewFilter, setReviewFilter] = useState('all')
+  const [selectedStaff, setSelectedStaff] = useState([])
+  const [timeStart, setTimeStart] = useState('')
+  const [timeEnd, setTimeEnd] = useState('')
+  const [editingReview, setEditingReview] = useState(null)
   const columns = [
     { key: 'source', label: 'Origem', value: (row) => row.fonte },
     { key: 'date', label: 'Data', value: (row) => row.data },
     { key: 'time', label: 'Hora', value: (row) => row.hora || '—' },
-    { key: 'operator', label: 'Operador', value: (row) => operatorName(row.operador) },
+    { key: 'operator', label: 'Operador PaggPix', value: (row) => row.fonte === 'PaggPix' ? staffNameForRow(row, 'PaggPix', staff) : '—' },
     { key: 'type', label: 'Tipo/Bandeira', value: (row) => row.tipo || row.bandeira || '—' },
     { key: 'value', label: 'Valor', value: (row) => formatMoney(row.valor) },
     { key: 'status', label: 'Status', value: (row) => STATUS_LABEL[row.status], render: (row) => <StatusPill status={row.status} /> },
-    ...(markerKind ? [{ key: 'analysis', label: 'Análise', filterable: false, value: () => '', render: (row) => <AnalystMarker marker={markers[row.__markerKey]} onToggle={() => onToggleMarker(row.__markerKey)} /> }] : []),
+    ...(markerKind ? [{ key: 'analysis', label: 'Análise', filterable: false, value: () => '', render: (row) => <AnalystMarker marker={markers[row.__markerKey]} staff={staff} onOpen={() => setEditingReview({ key: row.__markerKey, marker: markers[row.__markerKey], defaultTime: row.hora })} /> }] : []),
   ]
   const { orderedColumns, moveColumn, shiftColumn } = useReorderableColumns(columns, 'drogaria-center:trier:no-sale-column-order:v1')
   const keyedRows = rowsWithMarkerKeys(rows, markerKind)
   const columnFilteredRows = columnFilter(keyedRows, columns, filters)
-  const filteredRows = markerKind ? columnFilteredRows.filter((row) => reviewFilter === 'all' || (reviewFilter === 'marked') === Boolean(markers[row.__markerKey])) : columnFilteredRows
+  const filteredRows = columnFilteredRows.filter((row) => {
+    if (markerKind && reviewFilter !== 'all' && (reviewFilter === 'marked') !== Boolean(markers[row.__markerKey])) return false
+    const seller = row.fonte === 'PaggPix' ? staffForRow(row, 'PaggPix', staff) : null
+    if (selectedStaff.length && (!seller || !selectedStaff.includes(seller.id))) return false
+    return timeIsInRange(row.hora, timeStart, timeEnd)
+  })
   if (!rows.length) return <EmptyTable />
-  return <>{markerKind && <ReviewToolbar rows={keyedRows} markers={markers} reviewFilter={reviewFilter} onReviewFilter={setReviewFilter} onSetAll={onSetMarkers} />}<div className="table-meta"><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} registro(s).</div><div className="column-order-hint no-print">⠿ Arraste uma coluna ou use as setas para reorganizar</div></div><Table><thead><tr>{orderedColumns.map((column, index) => <ReorderableColumnHeader key={column.key} column={column} index={index} total={orderedColumns.length} onMove={moveColumn} onShift={shiftColumn} />)}</tr><FilterRow tableId="no-sale-filter" columns={orderedColumns} rows={keyedRows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
+  return <>{markerKind && <ReviewToolbar rows={keyedRows} markers={markers} reviewFilter={reviewFilter} onReviewFilter={setReviewFilter} onSetAll={onSetMarkers} staff={staff} selectedStaff={selectedStaff} onSelectedStaff={setSelectedStaff} timeStart={timeStart} timeEnd={timeEnd} onTimeStart={setTimeStart} onTimeEnd={setTimeEnd} />}<div className="table-meta"><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} registro(s).</div><div className="column-order-hint no-print">⠿ Arraste uma coluna ou use as setas para reorganizar</div></div><Table><thead><tr>{orderedColumns.map((column, index) => <ReorderableColumnHeader key={column.key} column={column} index={index} total={orderedColumns.length} onMove={moveColumn} onShift={shiftColumn} />)}</tr><FilterRow tableId="no-sale-filter" columns={orderedColumns} rows={keyedRows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
     {filteredRows.map((row, index) => { const marker = markers[row.__markerKey]; return <tr className={marker ? 'manually-reconciled' : ''} key={row.__markerKey || `${row.fonte}-${row.data}-${row.hora}-${row.valor}-${index}`}>{orderedColumns.map((column) => <td key={column.key}>{column.render ? column.render(row) : column.value(row)}</td>)}</tr> })}
     {!filteredRows.length && <tr className="empty-row"><td colSpan={orderedColumns.length}>Nenhum registro corresponde aos filtros.</td></tr>}
-  </tbody></Table></>
+  </tbody></Table>{editingReview && <ReviewEditor key={editingReview.key} entry={editingReview} staff={staff} onSave={onSaveMarker} onRemove={onRemoveMarker} onClose={() => setEditingReview(null)} />}</>
 }
 
 function Table({ children }) { return <div className="table-frame"><div className="table-scroll"><table>{children}</table></div></div> }
@@ -261,32 +390,42 @@ function ClosingCreditSummary({ groups }) {
   return <div className="closing-credit-groups">{groups.map((group, index) => <article key={`${group.data}-${group.valor}-${index}`} className={group.conciliado ? 'matched' : 'pending'}><div><span>{group.conciliado ? '✓ Conciliado pelo fechamento' : '! Valor ainda não localizado'}</span><strong>Contas recebidas crediário (Cartão)</strong><small>Fechamento de {group.data}</small></div><dl><div><dt>Informado</dt><dd>{formatMoney(group.valor)}</dd></div><div><dt>Encontrado na Cielo</dt><dd>{formatMoney(group.totalEncontrado)}</dd></div><div><dt>Recebimentos</dt><dd>{group.quantidadeRecebimentos}</dd></div><div><dt>Diferença</dt><dd>{formatMoney(group.diff)}</dd></div></dl></article>)}</div>
 }
 
-function exportRows(output, markers = {}) {
+function markerExportFields(marker, staff, applicable = true) {
+  return {
+    'Revisão do analista': applicable ? (marker ? 'Revisado' : 'Pendente') : '',
+    'Data da revisão': marker?.markedAt ? new Date(marker.markedAt).toLocaleString('pt-BR') : '',
+    'Colaboradores envolvidos': (marker?.staffIds ?? []).map((id) => staff.find((person) => person.id === id)?.name).filter(Boolean).join(', '),
+    'Horário localizado': marker?.resolvedTime || '',
+    'Observação da revisão': marker?.note || '',
+  }
+}
+
+function exportRows(output, markers = {}, staff = DEFAULT_STAFF) {
   const sales = rowsWithMarkerKeys(output.results, 'sem_recebimento')
   const receipts = rowsWithMarkerKeys(output.semVenda, 'sem_venda')
   const closingReceipts = output.crediarioCartao ?? []
   return [
     ...sales.map((row) => ({
-      'Número da venda': row.sale.numero, Data: row.sale.data, 'Hora da venda': row.sale.hora || '', Operador: operatorName(row.sale.operador), 'Forma de pagamento': row.sale.forma || '', 'Delivery/Balcão': row.sale.tele === 'Sim' ? 'Delivery' : 'Balcão', 'Valor da venda': row.sale.valor, 'Valor recebido': row.recebimento?.valor ?? '', Origem: row.fonte || '', 'Hora do recebimento': row.recebimento?.hora || '', 'Diferença de valor': row.diff ?? '', Status: STATUS_LABEL[row.status], 'Revisão do analista': row.status === 'SEM_RECEBIMENTO' ? (markers[row.__markerKey] ? 'Conciliado pelo analista' : 'Pendente') : '', 'Data da revisão': markers[row.__markerKey]?.markedAt ? new Date(markers[row.__markerKey].markedAt).toLocaleString('pt-BR') : '',
+      'Número da venda': row.sale.numero, Data: row.sale.data, 'Hora da venda': row.sale.hora || '', 'Vendedor Trier': staffNameForRow(row.sale, 'Trier', staff), 'Operador PaggPix': row.recebimento && row.fonte === 'PaggPix' ? staffNameForRow(row.recebimento, 'PaggPix', staff) : '', 'Forma de pagamento': row.sale.forma || '', 'Delivery/Balcão': row.sale.tele === 'Sim' ? 'Delivery' : 'Balcão', 'Valor da venda': row.sale.valor, 'Valor recebido': row.recebimento?.valor ?? '', Origem: row.fonte || '', 'Hora do recebimento': row.recebimento?.hora || '', 'Diferença de valor': row.diff ?? '', Status: STATUS_LABEL[row.status], ...markerExportFields(markers[row.__markerKey], staff, row.status === 'SEM_RECEBIMENTO'),
     })),
     ...receipts.map((row) => ({
-      'Número da venda': '', Data: row.data, 'Hora da venda': '', Operador: operatorName(row.operador), 'Forma de pagamento': '', 'Delivery/Balcão': row.tipo || row.bandeira || '', 'Valor da venda': '', 'Valor recebido': row.valor, Origem: row.fonte, 'Hora do recebimento': row.hora || '', 'Diferença de valor': '', Status: STATUS_LABEL[row.status], 'Revisão do analista': markers[row.__markerKey] ? 'Conciliado pelo analista' : 'Pendente', 'Data da revisão': markers[row.__markerKey]?.markedAt ? new Date(markers[row.__markerKey].markedAt).toLocaleString('pt-BR') : '',
+      'Número da venda': '', Data: row.data, 'Hora da venda': '', 'Vendedor Trier': '', 'Operador PaggPix': row.fonte === 'PaggPix' ? staffNameForRow(row, 'PaggPix', staff) : '', 'Forma de pagamento': '', 'Delivery/Balcão': row.tipo || row.bandeira || '', 'Valor da venda': '', 'Valor recebido': row.valor, Origem: row.fonte, 'Hora do recebimento': row.hora || '', 'Diferença de valor': '', Status: STATUS_LABEL[row.status], ...markerExportFields(markers[row.__markerKey], staff),
     })),
     ...closingReceipts.map((row) => ({
-      'Número da venda': '', Data: row.data, 'Hora da venda': '', Operador: operatorName(row.operador), 'Forma de pagamento': '', 'Delivery/Balcão': row.tipo || row.bandeira || '', 'Valor da venda': '', 'Valor recebido': row.valor, Origem: 'Cielo / Fechamento de Caixa', 'Hora do recebimento': row.hora || '', 'Diferença de valor': '', Status: STATUS_LABEL[row.status], 'Revisão do analista': '', 'Data da revisão': '',
+      'Número da venda': '', Data: row.data, 'Hora da venda': '', 'Vendedor Trier': '', 'Operador PaggPix': '', 'Forma de pagamento': '', 'Delivery/Balcão': row.tipo || row.bandeira || '', 'Valor da venda': '', 'Valor recebido': row.valor, Origem: 'Cielo / Fechamento de Caixa', 'Hora do recebimento': row.hora || '', 'Diferença de valor': '', Status: STATUS_LABEL[row.status], ...markerExportFields(null, staff, false),
     })),
   ]
 }
 
-function downloadCsv(output, markers) {
-  const rows = exportRows(output, markers); if (!rows.length) return
-  const headers = Object.keys(rows[0]); const content = [headers.join(';'), ...rows.map((row) => headers.map((key) => String(row[key]).replace(/;/g, ',')).join(';'))].join('\n')
+function downloadCsv(output, markers, staff) {
+  const rows = exportRows(output, markers, staff); if (!rows.length) return
+  const headers = Object.keys(rows[0]); const content = [headers.join(';'), ...rows.map((row) => headers.map((key) => String(row[key]).replace(/[;\r\n]+/g, ' ')).join(';'))].join('\n')
   const url = URL.createObjectURL(new Blob(['\uFEFF', content], { type: 'text/csv;charset=utf-8' }))
   const link = Object.assign(document.createElement('a'), { href: url, download: 'concilia_trier.csv' }); link.click(); URL.revokeObjectURL(url)
 }
 
-async function downloadExcel(output, markers) {
-  const rows = exportRows(output, markers); if (!rows.length) return
+async function downloadExcel(output, markers, staff) {
+  const rows = exportRows(output, markers, staff); if (!rows.length) return
   const { default: ExcelJS } = await import('exceljs')
   const headers = Object.keys(rows[0])
   const workbook = new ExcelJS.Workbook()
@@ -711,25 +850,88 @@ export default function App() {
   const [tab, setTab] = useState('resumo')
   const [error, setError] = useState('')
   const [analystMarkers, setAnalystMarkers] = useState(loadAnalystMarkers)
+  const [staff, setStaff] = useState(loadStaffDirectory)
   const [discountMode, setDiscountMode] = useState('percent')
   const [discountPercentThreshold, setDiscountPercentThreshold] = useState(30)
   const [discountValueThreshold, setDiscountValueThreshold] = useState(20)
   const [discountAudit, setDiscountAudit] = useState(null)
+  const [historyReady, setHistoryReady] = useState(false)
+  const [historySavedAt, setHistorySavedAt] = useState('')
+  const [historyMessage, setHistoryMessage] = useState('')
   const canRun = files.trier && (files.pagpix || files.cielo)
 
   useEffect(() => {
     window.localStorage.setItem(ANALYST_MARKERS_STORAGE_KEY, JSON.stringify(analystMarkers))
   }, [analystMarkers])
 
-  function toggleAnalystMarker(markerKey) {
-    setAnalystMarkers((current) => {
-      if (current[markerKey]) {
-        const next = { ...current }
-        delete next[markerKey]
-        return next
+  useEffect(() => { window.localStorage.setItem(STAFF_STORAGE_KEY, JSON.stringify(staff)) }, [staff])
+
+  useEffect(() => {
+    let active = true
+    loadReconciliationSession().then((saved) => {
+      if (!active || !saved?.files) return
+      const restoredFiles = Object.fromEntries(Object.keys(EMPTY_FILES).map((key) => [key, saved.files[key] || null]))
+      const restoredValueTolerance = saved.toleranceValue ?? 0.5
+      const restoredHourTolerance = saved.toleranceHours ?? 2
+      setFiles(restoredFiles)
+      setToleranceValue(restoredValueTolerance)
+      setToleranceHours(restoredHourTolerance)
+      setHistorySavedAt(saved.savedAt || '')
+      setHistoryMessage('Última sessão restaurada. Você pode trocar qualquer relatório quando quiser.')
+      if (restoredFiles.trier && (restoredFiles.pagpix || restoredFiles.cielo)) {
+        try {
+          setOutput(reconcile(restoredFiles, Number(restoredValueTolerance) || 0, Number(restoredHourTolerance) || 0))
+          setTab('resumo')
+        } catch {
+          setHistoryMessage('Os relatórios foram restaurados. Execute a conciliação para atualizar o resultado.')
+        }
       }
-      return { ...current, [markerKey]: { markedAt: new Date().toISOString() } }
-    })
+    }).finally(() => { if (active) setHistoryReady(true) })
+    return () => { active = false }
+  }, [])
+
+  useEffect(() => {
+    if (!historyReady || !Object.values(files).some(Boolean)) return undefined
+    const timer = window.setTimeout(() => {
+      saveReconciliationSession({ files, toleranceValue, toleranceHours })
+        .then(() => {
+          setHistorySavedAt(new Date().toISOString())
+          setHistoryMessage('Histórico atualizado automaticamente neste navegador.')
+        })
+        .catch(() => setHistoryMessage('Não foi possível salvar o histórico neste navegador. Verifique se o armazenamento local está permitido.'))
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [files, toleranceValue, toleranceHours, historyReady])
+
+  function saveStaffMember(person) {
+    setStaff((current) => current.some((item) => item.id === person.id) ? current.map((item) => item.id === person.id ? { ...item, ...person } : item) : [...current, person])
+  }
+
+  function toggleStaffActive(personId) {
+    setStaff((current) => current.map((person) => person.id === personId ? { ...person, active: person.active === false } : person))
+  }
+
+  async function clearSavedHistory() {
+    if (!window.confirm('Limpar os relatórios salvos neste navegador? Os arquivos importados e o resultado atual serão removidos.')) return
+    try {
+      await clearReconciliationSession()
+      setFiles({ ...EMPTY_FILES })
+      setOutput(null)
+      setDiscountAudit(null)
+      setError('')
+      setHistorySavedAt('')
+      setHistoryMessage('Histórico removido deste navegador.')
+    } catch {
+      setHistoryMessage('Não foi possível limpar o histórico. Tente novamente.')
+    }
+  }
+
+  function saveAnalystMarker(markerKey, marker) {
+    setAnalystMarkers((current) => ({ ...current, [markerKey]: marker }))
+  }
+
+  function removeAnalystMarker(markerKey) {
+    setAnalystMarkers((current) => { const next = { ...current }; delete next[markerKey]; return next })
   }
 
   function setAnalystMarkerGroup(markerKeys, shouldMark) {
@@ -737,7 +939,7 @@ export default function App() {
       const next = { ...current }
       if (shouldMark) {
         const markedAt = new Date().toISOString()
-        markerKeys.forEach((markerKey) => { next[markerKey] = next[markerKey] || { markedAt } })
+        markerKeys.forEach((markerKey) => { next[markerKey] = next[markerKey] || { markedAt, staffIds: [], resolvedTime: '', note: '' } })
       } else markerKeys.forEach((markerKey) => { delete next[markerKey] })
       return next
     })
@@ -814,15 +1016,17 @@ export default function App() {
       <div className="hero-mark" aria-hidden="true">+</div>
     </header>
     <section className="section-heading no-print"><div><span className="section-kicker">Etapa 1</span><h2>Importe os relatórios</h2><p>Comece pela Relação de Vendas e adicione pelo menos uma fonte de recebimentos.</p></div><div className="privacy-note"><span>✓</span> Seus arquivos não saem deste dispositivo</div></section>
+    <StaffDirectory staff={staff} onSave={saveStaffMember} onToggleActive={toggleStaffActive} />
+    <SavedReportsPanel files={files} savedAt={historySavedAt} restoring={!historyReady} message={historyMessage} onClear={clearSavedHistory} />
     <section className="no-print upload-grid">{Object.entries(SOURCES).map(([key, source]) => <FileSlot key={key} source={source} file={files[key]} onFile={(file) => handleFile(key, file)} />)}</section>
     {error && <div role="alert" className="error-box">{error}</div>}
     <section className="no-print controls"><div className="controls-title"><span className="section-kicker">Etapa 2</span><strong>Defina as tolerâncias</strong></div><label>Tolerância de valor (R$)<input type="number" min="0" step="0.1" value={toleranceValue} onChange={(event) => setToleranceValue(event.target.value)} /></label><label>Tolerância de horário (h)<input type="number" min="0" step="0.5" value={toleranceHours} onChange={(event) => setToleranceHours(event.target.value)} /></label><button className="primary-button" disabled={!canRun} onClick={runReconciliation}><span>Executar conciliação</span><b aria-hidden="true">→</b></button></section>
     <section className="discount-audit-controls no-print"><div className="discount-audit-heading"><span className="discount-audit-icon">%</span><div><span className="section-kicker">Auditoria da Trier</span><strong>Verificar vendas com desconto alto</strong><small>Escolha um limite por percentual ou por valor. Devoluções não entram nessa análise.</small></div></div><div className="discount-audit-form"><div className="discount-mode-toggle" role="group" aria-label="Tipo do limite de desconto"><button type="button" className={discountMode === 'percent' ? 'active' : ''} aria-pressed={discountMode === 'percent'} onClick={() => setDiscountMode('percent')}>% Percentual</button><button type="button" className={discountMode === 'value' ? 'active' : ''} aria-pressed={discountMode === 'value'} onClick={() => setDiscountMode('value')}>R$ Valor</button></div><label>{discountMode === 'percent' ? 'Desconto mínimo (%)' : 'Desconto mínimo (R$)'}<input type="number" min="0" step={discountMode === 'percent' ? '0.1' : '0.01'} value={discountMode === 'percent' ? discountPercentThreshold : discountValueThreshold} onChange={(event) => discountMode === 'percent' ? setDiscountPercentThreshold(event.target.value) : setDiscountValueThreshold(event.target.value)} /></label><button type="button" className="discount-audit-button" disabled={!files.trier} onClick={runDiscountAudit}>Verificar descontos altos <b aria-hidden="true">→</b></button></div></section>
-    {discountAudit && <section className="discount-audit-results"><div className="discount-results-heading"><div><span className="section-kicker">Resultado da auditoria</span><h2>Descontos altos</h2><p>Limite aplicado: <b>{discountAudit.mode === 'percent' ? `${discountAudit.threshold.toFixed(2).replace('.', ',')}%` : formatMoney(discountAudit.threshold)}</b>. A lista está ordenada do maior desconto para o menor.</p></div><button type="button" className="discount-close no-print" onClick={() => setDiscountAudit(null)}>Fechar análise</button></div><div className="discount-kpis"><article><small>Vendas encontradas</small><strong>{highDiscountRows.length}</strong></article><article><small>Total concedido</small><strong>{formatMoney(highDiscountTotal)}</strong></article><article><small>Maior percentual</small><strong>{highDiscountMaxPercent.toFixed(2).replace('.', ',')}%</strong></article></div>{highDiscountRows.length ? <DiscountAuditTable rows={highDiscountRows} /> : <div className="discount-empty"><span>✓</span><div><b>Nenhuma venda ultrapassou esse limite.</b><small>Você pode reduzir o percentual ou o valor e verificar novamente.</small></div></div>}</section>}
+    {discountAudit && <section className="discount-audit-results"><div className="discount-results-heading"><div><span className="section-kicker">Resultado da auditoria</span><h2>Descontos altos</h2><p>Limite aplicado: <b>{discountAudit.mode === 'percent' ? `${discountAudit.threshold.toFixed(2).replace('.', ',')}%` : formatMoney(discountAudit.threshold)}</b>. A lista está ordenada do maior desconto para o menor.</p></div><button type="button" className="discount-close no-print" onClick={() => setDiscountAudit(null)}>Fechar análise</button></div><div className="discount-kpis"><article><small>Vendas encontradas</small><strong>{highDiscountRows.length}</strong></article><article><small>Total concedido</small><strong>{formatMoney(highDiscountTotal)}</strong></article><article><small>Maior percentual</small><strong>{highDiscountMaxPercent.toFixed(2).replace('.', ',')}%</strong></article></div>{highDiscountRows.length ? <DiscountAuditTable rows={highDiscountRows} staff={staff} /> : <div className="discount-empty"><span>✓</span><div><b>Nenhuma venda ultrapassou esse limite.</b><small>Você pode reduzir o percentual ou o valor e verificar novamente.</small></div></div>}</section>}
     {output && <section className="results-section"><div className="results-heading"><span className="section-kicker">Etapa 3</span><h2>Resultado da conciliação</h2><p>Revise os indicadores e filtre cada coluna para investigar os registros.</p></div><div className="kpi-grid">{kpis.map(([label, value]) => <div className="kpi" key={label}><div>{label}</div><strong>{value}</strong></div>)}</div>
-      <div className="no-print tabs"><div className="tab-list">{tabs.map(([key, label]) => <button key={key} className={tab === key ? 'tab active' : 'tab'} onClick={() => setTab(key)}>{label}</button>)}</div><div className="export-list"><button onClick={() => downloadCsv(output, analystMarkers)}>⇩ CSV</button><button onClick={() => downloadExcel(output, analystMarkers)}>⇩ Excel</button><button onClick={() => window.print()}>⇩ PDF</button></div></div>
+      <div className="no-print tabs"><div className="tab-list">{tabs.map(([key, label]) => <button key={key} className={tab === key ? 'tab active' : 'tab'} onClick={() => setTab(key)}>{label}</button>)}</div><div className="export-list"><button onClick={() => downloadCsv(output, analystMarkers, staff)}>⇩ CSV</button><button onClick={() => downloadExcel(output, analystMarkers, staff)}>⇩ Excel</button><button onClick={() => window.print()}>⇩ PDF</button></div></div>
       {tab === 'resumo' && <div className="summary-card">Das <b>{counts.total}</b> vendas eletrônicas da Relação de Vendas, <b className="text-green">{counts.reconciled}</b> foram conciliadas, <b className="text-amber">{counts.divergent}</b> tiveram divergência de valor dentro da tolerância e <b className="text-rust">{counts.missing}</b> não encontraram recebimento correspondente.{noSale.length > 0 && <><br /><br />Também foram encontrados <b className="text-rust">{noSale.length}</b> recebimentos sem venda correspondente, sendo <b>{counts.duplicates}</b> identificados como possível duplicidade.</>}{crediarioCartao.length > 0 && <><br /><br /><b className="text-green">{crediarioCartao.length}</b> recebimento(s) da Cielo, somando <b>{formatMoney(crediarioCartao.reduce((sum, row) => sum + row.valor, 0))}</b>, foram identificados como <b>Contas Recebidas Crediário (Cartão)</b> pelo Fechamento de Caixa.</>}{counts.returns > 0 && <><br /><br /><b>{counts.returns}</b> linha(s) de devolução não entraram na conciliação, pois não representam recebimento a buscar.</>}<br /><br />Use as abas para revisar cada grupo ou exporte a tabela final em Excel, CSV ou PDF.</div>}
-      {tab === 'conciliada' && <SalesTable rows={results.filter((row) => row.status === 'CONCILIADA')} />}{tab === 'divergencia' && <SalesTable rows={results.filter((row) => row.status === 'DIVERGENCIA')} />}{tab === 'sem_recebimento' && <SalesTable rows={results.filter((row) => row.status === 'SEM_RECEBIMENTO')} markers={analystMarkers} onToggleMarker={toggleAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_recebimento" />}{tab === 'devolucao' && <SalesTable rows={results.filter((row) => row.status === 'DEVOLUCAO')} />}{tab === 'sem_venda' && <NoSaleTable rows={noSale} markers={analystMarkers} onToggleMarker={toggleAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_venda" />}{tab === 'crediario_cartao' && <><ClosingCreditSummary groups={fechamentoCrediario} /><NoSaleTable rows={crediarioCartao} /></>}
+      {tab === 'conciliada' && <SalesTable rows={results.filter((row) => row.status === 'CONCILIADA')} staff={staff} />}{tab === 'divergencia' && <SalesTable rows={results.filter((row) => row.status === 'DIVERGENCIA')} staff={staff} />}{tab === 'sem_recebimento' && <SalesTable rows={results.filter((row) => row.status === 'SEM_RECEBIMENTO')} markers={analystMarkers} onSaveMarker={saveAnalystMarker} onRemoveMarker={removeAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_recebimento" staff={staff} />}{tab === 'devolucao' && <SalesTable rows={results.filter((row) => row.status === 'DEVOLUCAO')} staff={staff} />}{tab === 'sem_venda' && <NoSaleTable rows={noSale} markers={analystMarkers} onSaveMarker={saveAnalystMarker} onRemoveMarker={removeAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_venda" staff={staff} />}{tab === 'crediario_cartao' && <><ClosingCreditSummary groups={fechamentoCrediario} /><NoSaleTable rows={crediarioCartao} staff={staff} /></>}
     </section>}
     <footer className="app-footer"><img src={assetPath('drogaria-center-logo.png')} alt="Drogaria Center" /><span>Conciliação segura, simples e local.</span></footer>
   </div></main>

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { findHighDiscountSales, parseCieloLines, parseFechamentoLines, parseTrierLines, reconcile } from './reconciliation.js'
+import { findHighDiscountSales, parseCieloLines, parseFechamentoLines, parseTrierLines, reconcile, resolveOperator } from './reconciliation.js'
 
 const sampleLines = [
   '268648 1 CARTAO 30/07/26 07:20 65 83509 8 49,99 10,00 -5,00 44,99 44,99',
@@ -34,6 +34,14 @@ test('limite zero mostra somente vendas que realmente tiveram desconto', () => {
   const sales = parseTrierLines([...sampleLines, '268649 1 CARTAO 30/07/26 07:19 65 83508 8 22,99 0,00 0,00 22,99 22,99'])
   const discounted = findHighDiscountSales(sales, 'percent', 0)
   assert.deepEqual(discounted.map((sale) => sale.numero), ['268669', '268711', '268648'])
+})
+
+test('cadastro identifica novo vendedor pelo número da Trier e pelo nome do PaggPix', () => {
+  const staff = [{ id: 'joao', name: 'João Victor', trierCode: '20', pagpixAliases: ['João Victor', 'Joao V'], active: true }]
+  const trier = { operador: null, raw: '268900 1 PIX 30/07/26 10:15 65 83900 20 25,00 0,00 0,00 25,00 25,00' }
+  const pagpix = { operador: '13', operadorOriginal: 'Joao V', raw: '30/07/2026, 13:16 Balcao Joao V PAGO R$ 25.00' }
+  assert.equal(resolveOperator(trier, 'Trier', staff)?.id, 'joao')
+  assert.equal(resolveOperator(pagpix, 'PaggPix', staff)?.id, 'joao')
 })
 
 test('extrai contas recebidas crediário no cartão do fechamento', () => {

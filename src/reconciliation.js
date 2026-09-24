@@ -27,6 +27,48 @@ const NOME_TO_CODE = Object.fromEntries(
   Object.entries(OPERADORES).map(([code, name]) => [name.split(' ')[0].toUpperCase(), code]),
 )
 
+function normalizeOperatorText(value) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .trim()
+}
+
+function operatorAliases(operator) {
+  const aliases = Array.isArray(operator.pagpixAliases) ? operator.pagpixAliases : String(operator.pagpixName ?? '').split(/[,;\n]/)
+  return [operator.name, ...aliases].map(normalizeOperatorText).filter(Boolean).sort((a, b) => b.length - a.length)
+}
+
+function containsOperatorAlias(text, alias) {
+  return ` ${text} `.includes(` ${alias} `)
+}
+
+function inferTrierOperatorCode(row) {
+  if (row.operadorOriginal) return String(row.operadorOriginal).trim()
+  const raw = String(row.raw ?? '')
+  const firstMoneyIndex = raw.search(/-?\d{1,3}(?:\.\d{3})*,\d{2}/)
+  const beforeMoney = firstMoneyIndex >= 0 ? raw.slice(0, firstMoneyIndex) : raw
+  return [...beforeMoney.matchAll(/\b\d{1,3}\b/g)].at(-1)?.[0] ?? ''
+}
+
+export function resolveOperator(row, source, operators = []) {
+  if (!row) return null
+  const code = String(row.operador ?? '').trim()
+  const direct = operators.find((operator) => String(operator.trierCode ?? '').trim() === code)
+  if (/trier/i.test(source)) {
+    if (direct) return direct
+    const inferredCode = inferTrierOperatorCode(row)
+    return operators.find((operator) => String(operator.trierCode ?? '').trim() === inferredCode) ?? null
+  }
+  if (/pagg?pix/i.test(source)) {
+    const searchable = normalizeOperatorText(row.operadorOriginal || row.raw)
+    return operators.find((operator) => operatorAliases(operator).some((alias) => containsOperatorAlias(searchable, alias))) ?? direct ?? null
+  }
+  return direct ?? null
+}
+
 export async function extractPdfLines(file) {
   const pdfjsLib = await import('pdfjs-dist')
   pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -129,6 +171,7 @@ export function parseTrierLines(lines) {
       numero: head[1],
       forma: head[2],
       operador: findTrierOperator(chunk, monies[0]),
+      operadorOriginal: findTrierOperator(chunk, monies[0]),
       tele: /\bSim\b/.test(chunk) ? 'Sim' : '',
       isDev: /\bDev\b/i.test(chunk),
       data: date[1],
@@ -219,6 +262,7 @@ export async function parseTrierSpreadsheet(file) {
           numero,
           forma,
           operador: OP_CODES.includes(operator.trim()) ? operator.trim() : findOperadorCode(operator),
+          operadorOriginal: operator.trim(),
           tele: /^sim$/i.test(tele) ? 'Sim' : '',
           isDev: /\bdev\b/i.test(type),
           data: DATE_RE.exec(data)?.[1] ?? data,
@@ -253,7 +297,7 @@ export function parsePagPixLines(lines) {
         : /PENDENTE/i.test(line) ? 'PENDENTE'
           : /CANCELAD/i.test(line) ? 'CANCELADA' : null
     const tipo = /\bdelivery\b/i.test(line) ? 'Delivery' : /\bbalc[aã]o\b/i.test(line) ? 'Balcao' : null
-    return [{ data: date[1], hora: date[2], operador: findOperadorCode(line), tipo, status, valor: toNumber(money[1]), raw: line }]
+    return [{ data: date[1], hora: date[2], operador: findOperadorCode(line), operadorOriginal: '', tipo, status, valor: toNumber(money[1]), raw: line }]
   })
 }
 
@@ -325,6 +369,7 @@ export async function parsePagPixSpreadsheet(file) {
     rows.push({
       ...dateTime,
       operador: findOperadorCode(operator),
+      operadorOriginal: operator,
       tipo: /^delivery$/i.test(type) ? 'Delivery' : /^balc[a-z]+o$/i.test(type) ? 'Balcao' : type,
       status,
       valor,
