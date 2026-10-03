@@ -149,6 +149,58 @@ test('desconciliação manual devolve a venda e o recebimento para as pendência
   assert.equal(output.semVenda[0].manualUnmatchSaleKey, saleKey)
 })
 
+test('conciliação manual confirma um recebimento escolhido fora da tolerância automática', () => {
+  const trier = parseTrierLines(['286901 1 CARTAO 02/10/26 10:00 65 95975 1 50,00 0,00 0,00 50,00 50,00'])
+  const cielo = [{ data: '02/10/2026', hora: '15:30:00', status: 'APROVADA', bandeira: 'VISA', valor: 52, raw: '02/10/2026 15:30:00 APROVADA VISA 52,00' }]
+  const saleKey = reconciliationSaleKey(trier[0])
+  const receiptKey = reconciliationReceiptKey({ ...cielo[0], fonte: 'Cielo' })
+  const files = { trier: { rows: trier }, pagpix: { rows: [] }, cielo: { rows: cielo }, fechamento: { rows: [] } }
+  const output = reconcile(files, 0.5, 2, {}, { [saleKey]: { saleKey, receiptKey } })
+  const result = output.results.find((row) => row.sale.numero === '286901')
+  assert.equal(result.status, 'DIVERGENCIA')
+  assert.equal(result.manualMatch, true)
+  assert.equal(result.recebimento.valor, 52)
+  assert.equal(result.motivo, 'Conciliação confirmada manualmente pelo analista')
+  assert.equal(output.semVenda.length, 0)
+})
+
+test('conciliação manual soma crédito e débito na mesma venda', () => {
+  const trier = parseTrierLines(['286326 1 CARTAO 02/10/26 08:35 65 95745 8 15,00 0,00 0,00 15,00 15,00'])
+  const cielo = [
+    { data: '02/10/2026', hora: '08:32:00', status: 'APROVADA', tipo: 'Crédito', bandeira: 'VISA', valor: 10, raw: 'credito 10' },
+    { data: '02/10/2026', hora: '08:33:00', status: 'APROVADA', tipo: 'Débito', bandeira: 'MASTERCARD', valor: 5, raw: 'debito 5' },
+  ]
+  const saleKey = reconciliationSaleKey(trier[0])
+  const receiptKeys = cielo.map((item) => reconciliationReceiptKey({ ...item, fonte: 'Cielo' }))
+  const files = { trier: { rows: trier }, pagpix: { rows: [] }, cielo: { rows: cielo }, fechamento: { rows: [] } }
+  const output = reconcile(files, 0.5, 2, {}, { [saleKey]: { saleKey, receiptKey: receiptKeys[0], receiptKeys } })
+  const result = output.results.find((row) => row.sale.numero === '286326')
+
+  assert.equal(result.status, 'CONCILIADA')
+  assert.equal(result.manualMatch, true)
+  assert.equal(result.recebimentos.length, 2)
+  assert.equal(result.recebimento.valor, 15)
+  assert.equal(result.diff, 0)
+  assert.equal(result.fonte, 'Cielo')
+  assert.equal(output.semVenda.length, 0)
+})
+
+test('conciliação manual aceita forma de pagamento informada pelo analista', () => {
+  const trier = parseTrierLines(['286327 1 PIX 02/10/26 11:00 65 95746 8 20,00 0,00 0,00 20,00 20,00'])
+  const saleKey = reconciliationSaleKey(trier[0])
+  const manualReceipt = { saleKey, fonte: 'Manual', status: 'MANUAL', tipo: 'Dinheiro', data: '02/10/2026', hora: '11:00', valor: 20, raw: 'Pagamento informado manualmente teste' }
+  const receiptKey = reconciliationReceiptKey(manualReceipt)
+  const files = { trier: { rows: trier }, pagpix: { rows: [] }, cielo: { rows: [] }, fechamento: { rows: [] } }
+  const output = reconcile(files, 0.5, 2, {}, { [saleKey]: { saleKey, receiptKey, receiptKeys: [receiptKey] } }, { [receiptKey]: manualReceipt })
+  const result = output.results.find((row) => row.sale.numero === '286327')
+
+  assert.equal(result.status, 'CONCILIADA')
+  assert.equal(result.fonte, 'Manual')
+  assert.equal(result.recebimento.tipo, 'Dinheiro')
+  assert.match(result.motivo, /forma de pagamento informada/)
+  assert.equal(output.semVenda.length, 0)
+})
+
 test('extrai contas recebidas crediário no cartão do fechamento', () => {
   const rows = parseFechamentoLines([
     'Período: 30/07/2026 à 30/07/2026',
