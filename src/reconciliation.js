@@ -505,23 +505,7 @@ export function reconcile(files, toleranceValue, toleranceHours) {
     return { pool: [], fonte: null }
   }
 
-  const tryMatch = (sale, requireTime) => {
-    const { pool, fonte, expectedType } = getPool(sale)
-    if (!fonte) return null
-    let candidates = pool.filter((item) => Math.abs(item.valor - sale.valor) <= toleranceValue)
-    if (requireTime) candidates = candidates.filter((item) => Math.abs(item.min - sale.min) <= toleranceHours * 60)
-    if (!candidates.length) return null
-    const pixPriority = (item) => {
-      if (fonte !== 'PaggPix') return 0
-      const sameSeller = sale.operador && item.operador && String(item.operador) === String(sale.operador)
-      const sameChannel = item.tipo === expectedType
-      if (sameSeller && sameChannel) return 0
-      if (sameSeller) return 1
-      if (sameChannel) return 2
-      return 3
-    }
-    candidates.sort((a, b) => pixPriority(a) - pixPriority(b) || Math.abs(a.valor - sale.valor) - Math.abs(b.valor - sale.valor) || Math.abs(a.min - sale.min) - Math.abs(b.min - sale.min))
-    const recebimento = candidates[0]
+  const buildMatchedResult = (sale, recebimento, fonte, expectedType) => {
     recebimento.used = true
     const diff = +(sale.valor - recebimento.valor).toFixed(2)
     const channelMismatch = fonte === 'PaggPix' && recebimento.tipo !== expectedType
@@ -538,15 +522,107 @@ export function reconcile(files, toleranceValue, toleranceHours) {
     }
   }
 
+  // Resolve todas as disputas entre vendas e recebimentos em conjunto. O fluxo
+  // maximo evita perder conciliacoes e o menor custo reserva primeiro os pares
+  // de valor exato, canal/vendedor compativel e horario mais proximo.
+  const assignGlobally = (sales, requireTime) => {
+    const candidates = []
+    const receipts = []
+    const receiptIndexes = new Map()
+    sales.forEach((sale, saleIndex) => {
+      const { pool, fonte, expectedType } = getPool(sale)
+      if (!fonte) return
+      pool.forEach((receipt) => {
+        const valueDifference = Math.abs(receipt.valor - sale.valor)
+        const timeDifferenceMinutes = Math.abs(receipt.min - sale.min)
+        if (valueDifference > toleranceValue) return
+        if (requireTime && timeDifferenceMinutes > toleranceHours * 60) return
+        if (!receiptIndexes.has(receipt)) {
+          receiptIndexes.set(receipt, receipts.length)
+          receipts.push(receipt)
+        }
+        let channelPriority = 0
+        if (fonte === 'PaggPix') {
+          const sameSeller = sale.operador && receipt.operador && String(receipt.operador) === String(sale.operador)
+          const sameChannel = receipt.tipo === expectedType
+          channelPriority = sameSeller && sameChannel ? 0 : sameSeller ? 1 : sameChannel ? 2 : 3
+        }
+        candidates.push({
+          sale,
+          saleIndex,
+          receipt,
+          receiptIndex: receiptIndexes.get(receipt),
+          fonte,
+          expectedType,
+          // Um centavo vale mais que qualquer diferenca de canal/horario.
+          cost: Math.round(valueDifference * 100) * 1_000_000_000
+            + channelPriority * 100_000_000
+            + Math.round(Math.abs(receipt.dt - sale.dt) / 1000) * 100
+            + saleIndex,
+        })
+      })
+    })
+    if (!candidates.length) return []
+
+    const source = 0
+    const saleOffset = 1
+    const receiptOffset = saleOffset + sales.length
+    const sink = receiptOffset + receipts.length
+    const graph = Array.from({ length: sink + 1 }, () => [])
+    const addEdge = (from, to, capacity, cost, candidate = null) => {
+      const forward = { to, reverse: graph[to].length, capacity, cost, candidate }
+      const backward = { to: from, reverse: graph[from].length, capacity: 0, cost: -cost, candidate: null }
+      graph[from].push(forward)
+      graph[to].push(backward)
+    }
+    sales.forEach((sale, index) => addEdge(source, saleOffset + index, 1, 0))
+    receipts.forEach((receipt, index) => addEdge(receiptOffset + index, sink, 1, 0))
+    candidates.forEach((candidate) => addEdge(saleOffset + candidate.saleIndex, receiptOffset + candidate.receiptIndex, 1, candidate.cost, candidate))
+
+    while (true) {
+      const distances = Array(graph.length).fill(Infinity)
+      const previousNode = Array(graph.length).fill(-1)
+      const previousEdge = Array(graph.length).fill(-1)
+      const queued = Array(graph.length).fill(false)
+      const queue = [source]
+      distances[source] = 0
+      queued[source] = true
+      while (queue.length) {
+        const node = queue.shift()
+        queued[node] = false
+        graph[node].forEach((edge, edgeIndex) => {
+          if (!edge.capacity || distances[edge.to] <= distances[node] + edge.cost) return
+          distances[edge.to] = distances[node] + edge.cost
+          previousNode[edge.to] = node
+          previousEdge[edge.to] = edgeIndex
+          if (!queued[edge.to]) { queue.push(edge.to); queued[edge.to] = true }
+        })
+      }
+      if (!Number.isFinite(distances[sink])) break
+      for (let node = sink; node !== source; node = previousNode[node]) {
+        const edge = graph[previousNode[node]][previousEdge[node]]
+        edge.capacity -= 1
+        graph[node][edge.reverse].capacity += 1
+      }
+    }
+
+    return graph.slice(saleOffset, receiptOffset).flatMap((edges) => edges
+      .filter((edge) => edge.candidate && edge.capacity === 0)
+      .map((edge) => edge.candidate))
+  }
+
+  const resolvePending = (resolved) => {
+    const timedMatches = assignGlobally(pending.filter((sale) => !resolved.has(sale.numero)), true)
+    timedMatches.forEach(({ sale, receipt, fonte, expectedType }) => resolved.set(sale.numero, buildMatchedResult(sale, receipt, fonte, expectedType)))
+    const fallbackMatches = assignGlobally(pending.filter((sale) => !resolved.has(sale.numero)), false)
+    fallbackMatches.forEach(({ sale, receipt, fonte, expectedType }) => resolved.set(sale.numero, buildMatchedResult(sale, receipt, fonte, expectedType)))
+    pending.forEach((sale) => {
+      if (!resolved.has(sale.numero)) resolved.set(sale.numero, { sale, status: 'SEM_RECEBIMENTO', fonte: getPool(sale).fonte, motivo: 'Nenhum recebimento correspondente encontrado' })
+    })
+  }
+
   const resolved = new Map()
-  pending.forEach((sale) => {
-    const match = tryMatch(sale, true)
-    if (match) resolved.set(sale.numero, match)
-  })
-  pending.forEach((sale) => {
-    if (resolved.has(sale.numero)) return
-    resolved.set(sale.numero, tryMatch(sale, false) ?? { sale, status: 'SEM_RECEBIMENTO', fonte: getPool(sale).fonte, motivo: 'Nenhum recebimento correspondente encontrado' })
-  })
+  resolvePending(resolved)
 
   let requiresRematch = false
   const closingGroups = fechamentoCrediario.map((closing, index) => {
@@ -568,14 +644,7 @@ export function reconcile(files, toleranceValue, toleranceHours) {
     pagpixPool.forEach((item) => { item.used = false })
     cieloPool.forEach((item) => { item.used = false })
     resolved.clear()
-    pending.forEach((sale) => {
-      const match = tryMatch(sale, true)
-      if (match) resolved.set(sale.numero, match)
-    })
-    pending.forEach((sale) => {
-      if (resolved.has(sale.numero)) return
-      resolved.set(sale.numero, tryMatch(sale, false) ?? { sale, status: 'SEM_RECEBIMENTO', fonte: getPool(sale).fonte, motivo: 'Nenhum recebimento correspondente encontrado' })
-    })
+    resolvePending(resolved)
   }
   pending.forEach((sale) => results.push(resolved.get(sale.numero)))
 

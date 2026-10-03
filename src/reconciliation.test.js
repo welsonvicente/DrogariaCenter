@@ -116,6 +116,22 @@ test('usa separadamente os dois pagamentos Cielo de R$ 10,00 e mantém os R$ 171
   assert.equal(output.semVenda.length, 0)
 })
 
+test('prioriza globalmente o recebimento exato mesmo com tolerância ampla', () => {
+  const trier = parseTrierLines([
+    '286500 1 CARTAO 02/10/26 18:00 65 95900 1 171,50 0,00 0,00 171,50 171,50',
+    '286586 1 CARTAO 02/10/26 21:25 65 95974 1 219,87 21,82 -47,97 171,90 0,00 171,90',
+  ])
+  const cielo = parseCieloLines([
+    '02/10/2026 21:24 Crédito parcelado loja 04 Mastercard R$ 171,90 Aprovada',
+  ])
+  const output = reconcile({ trier: { rows: trier }, cielo: { rows: cielo }, pagpix: { rows: [] }, fechamento: { rows: [] } }, 0.5, 4)
+  const bySale = new Map(output.results.map((row) => [row.sale.numero, row]))
+
+  assert.equal(bySale.get('286586').status, 'CONCILIADA')
+  assert.equal(bySale.get('286586').recebimento.hora, '21:24')
+  assert.equal(bySale.get('286500').status, 'SEM_RECEBIMENTO')
+})
+
 test('extrai contas recebidas crediário no cartão do fechamento', () => {
   const rows = parseFechamentoLines([
     'Período: 30/07/2026 à 30/07/2026',
