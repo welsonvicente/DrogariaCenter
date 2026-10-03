@@ -489,26 +489,53 @@ export function reconcile(files, toleranceValue, toleranceHours) {
   pending.sort((a, b) => a.min - b.min)
 
   const getPool = (sale) => {
-    if (sale.forma === 'PIX') return {
-      pool: pagpixPool.filter((item) => !item.used && sameDay(item.dt, sale.dt)
-        && ((sale.tele === 'Sim' && item.tipo === 'Delivery') || (sale.tele !== 'Sim' && item.tipo === 'Balcao'))),
-      fonte: 'PaggPix',
+    if (sale.forma === 'PIX') {
+      const expectedType = sale.tele === 'Sim' ? 'Delivery' : 'Balcao'
+      const available = pagpixPool.filter((item) => !item.used && sameDay(item.dt, sale.dt))
+      const sameChannel = available.filter((item) => item.tipo === expectedType)
+      // Algumas vendas são marcadas como Tele/Delivery na Trier, mas o QR Code
+      // fica registrado como Balcão no PaggPix (ou o inverso). Nesse caso,
+      // somente permita atravessar o canal quando o vendedor também coincidir.
+      const sameSellerOtherChannel = sale.operador
+        ? available.filter((item) => item.tipo !== expectedType && item.operador && String(item.operador) === String(sale.operador))
+        : []
+      return { pool: [...sameChannel, ...sameSellerOtherChannel], fonte: 'PaggPix', expectedType }
     }
     if (sale.forma === 'CARTAO') return { pool: cieloPool.filter((item) => !item.used && !item.reservedClosing && sameDay(item.dt, sale.dt)), fonte: 'Cielo' }
     return { pool: [], fonte: null }
   }
 
   const tryMatch = (sale, requireTime) => {
-    const { pool, fonte } = getPool(sale)
+    const { pool, fonte, expectedType } = getPool(sale)
     if (!fonte) return null
     let candidates = pool.filter((item) => Math.abs(item.valor - sale.valor) <= toleranceValue)
     if (requireTime) candidates = candidates.filter((item) => Math.abs(item.min - sale.min) <= toleranceHours * 60)
     if (!candidates.length) return null
-    candidates.sort((a, b) => Math.abs(a.valor - sale.valor) - Math.abs(b.valor - sale.valor) || Math.abs(a.min - sale.min) - Math.abs(b.min - sale.min))
+    const pixPriority = (item) => {
+      if (fonte !== 'PaggPix') return 0
+      const sameSeller = sale.operador && item.operador && String(item.operador) === String(sale.operador)
+      const sameChannel = item.tipo === expectedType
+      if (sameSeller && sameChannel) return 0
+      if (sameSeller) return 1
+      if (sameChannel) return 2
+      return 3
+    }
+    candidates.sort((a, b) => pixPriority(a) - pixPriority(b) || Math.abs(a.valor - sale.valor) - Math.abs(b.valor - sale.valor) || Math.abs(a.min - sale.min) - Math.abs(b.min - sale.min))
     const recebimento = candidates[0]
     recebimento.used = true
     const diff = +(sale.valor - recebimento.valor).toFixed(2)
-    return { sale, status: Math.abs(diff) < 0.005 ? 'CONCILIADA' : 'DIVERGENCIA', fonte, recebimento, diff, motivo: null }
+    const channelMismatch = fonte === 'PaggPix' && recebimento.tipo !== expectedType
+    return {
+      sale,
+      status: Math.abs(diff) < 0.005 ? 'CONCILIADA' : 'DIVERGENCIA',
+      fonte,
+      recebimento,
+      diff,
+      canalTrier: fonte === 'PaggPix' ? expectedType : null,
+      canalRecebimento: fonte === 'PaggPix' ? (recebimento.tipo || null) : null,
+      canalDivergente: channelMismatch,
+      motivo: channelMismatch ? `Canal divergente: Trier ${expectedType}, PaggPix ${recebimento.tipo || 'não informado'}; vendedor correspondente` : null,
+    }
   }
 
   const resolved = new Map()

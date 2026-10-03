@@ -9,6 +9,8 @@ import {
 const EMPTY_FILES = { trier: null, pagpix: null, cielo: null, fechamento: null }
 const ANALYST_MARKERS_STORAGE_KEY = 'drogaria-center:trier:analyst-markers:v1'
 const STAFF_STORAGE_KEY = 'drogaria-center:trier:staff-directory:v1'
+const RESULT_TAB_STORAGE_KEY = 'drogaria-center:trier:result-tab:v1'
+const TABLE_UI_STORAGE_PREFIX = 'drogaria-center:trier:table-ui:v1:'
 const APP_BASE_PATH = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`
 const SYSTEM_ROUTES = { home: '', trier: 'conciliacao-trier', cartazes: 'cartazes-oferta', cotacao: 'cotacao-medicamentos' }
 const assetPath = (path) => `${APP_BASE_PATH}${String(path).replace(/^\/+/, '')}`
@@ -34,6 +36,70 @@ function loadStaffDirectory() {
     if (Array.isArray(saved) && saved.length) return saved.map((person) => ({ ...person, pagpixAliases: Array.isArray(person.pagpixAliases) ? person.pagpixAliases : [], active: person.active !== false }))
   } catch { /* usa a equipe inicial */ }
   return DEFAULT_STAFF
+}
+
+function loadResultTab() {
+  try { return window.localStorage.getItem(RESULT_TAB_STORAGE_KEY) || 'resumo' }
+  catch { return 'resumo' }
+}
+
+function loadTableUiState(viewKey) {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(`${TABLE_UI_STORAGE_PREFIX}${viewKey}`) || '{}')
+    return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {}
+  } catch { return {} }
+}
+
+function usePersistentTableUi(viewKey) {
+  const initial = useRef(loadTableUiState(viewKey))
+  const [filters, setFilters] = useState(initial.current.filters ?? {})
+  const [reviewFilter, setReviewFilter] = useState(initial.current.reviewFilter || 'all')
+  const [selectedStaff, setSelectedStaff] = useState(initial.current.selectedStaff ?? [])
+  const [timeStart, setTimeStart] = useState(initial.current.timeStart || '')
+  const [timeEnd, setTimeEnd] = useState(initial.current.timeEnd || '')
+  const scrollRef = useRef(null)
+  const storageKey = `${TABLE_UI_STORAGE_PREFIX}${viewKey}`
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      if (scrollRef.current) scrollRef.current.scrollTop = Number(initial.current.scrollTop) || 0
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [storageKey])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify({
+        filters, reviewFilter, selectedStaff, timeStart, timeEnd,
+        scrollTop: (scrollRef.current?.scrollTop ?? Number(initial.current.scrollTop)) || 0,
+      }))
+    } catch { /* o navegador pode bloquear o armazenamento local */ }
+  }, [filters, reviewFilter, selectedStaff, timeStart, timeEnd, storageKey])
+
+  function saveScroll(event) {
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify({
+        filters, reviewFilter, selectedStaff, timeStart, timeEnd, scrollTop: event.currentTarget.scrollTop,
+      }))
+    } catch { /* mantém a navegação funcionando mesmo sem armazenamento */ }
+  }
+
+  const activeFilterCount = Object.values(filters).filter((value) => String(value ?? '').trim()).length
+    + (reviewFilter !== 'all' ? 1 : 0)
+    + (selectedStaff.length ? 1 : 0)
+    + (timeStart ? 1 : 0)
+    + (timeEnd ? 1 : 0)
+
+  function clearTableFilters() {
+    setFilters({})
+    setReviewFilter('all')
+    setSelectedStaff([])
+    setTimeStart('')
+    setTimeEnd('')
+    if (scrollRef.current) scrollRef.current.scrollTop = 0
+  }
+
+  return { filters, setFilters, reviewFilter, setReviewFilter, selectedStaff, setSelectedStaff, timeStart, setTimeStart, timeEnd, setTimeEnd, scrollRef, saveScroll, activeFilterCount, clearTableFilters }
 }
 
 function staffForRow(row, source, staff) {
@@ -97,6 +163,35 @@ function FileSlot({ source, file, onFile }) {
 }
 
 function StatusPill({ status }) { return <span className={`status status-${status}`}>{STATUS_LABEL[status]}</span> }
+
+function trierChannel(row) {
+  if (row.sale?.forma !== 'PIX') return '—'
+  return row.canalTrier || (row.sale.tele === 'Sim' ? 'Delivery' : 'Balcão')
+}
+
+function receiptChannel(row) {
+  if (row.fonte !== 'PaggPix' || !row.recebimento) return '—'
+  return row.canalRecebimento || row.recebimento.tipo || 'Não informado'
+}
+
+function channelComparison(row) {
+  if (row.fonte !== 'PaggPix' || !row.recebimento) return '—'
+  const trier = trierChannel(row)
+  const receipt = receiptChannel(row)
+  return row.canalDivergente || trier !== receipt
+    ? `Divergente · Trier ${trier} → PaggPix ${receipt}`
+    : `Compatível · ${trier}`
+}
+
+function ChannelComparison({ row }) {
+  const value = channelComparison(row)
+  if (value === '—') return <span>—</span>
+  const divergent = value.startsWith('Divergente')
+  return <span className={divergent ? 'channel-check divergent' : 'channel-check compatible'}>
+    <b>{divergent ? '⚠ Canal divergente' : '✓ Mesmo canal'}</b>
+    <small>{divergent ? `Trier: ${trierChannel(row)} → PaggPix: ${receiptChannel(row)}` : trierChannel(row)}</small>
+  </span>
+}
 
 function loadAnalystMarkers() {
   try {
@@ -286,12 +381,8 @@ function ReviewEditor({ entry, staff, onSave, onRemove, onClose }) {
   return <div className="review-modal-backdrop no-print" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="review-modal" role="dialog" aria-modal="true" aria-labelledby="review-modal-title"><div className="review-modal-heading"><div><span className="section-kicker">Revisão manual</span><h3 id="review-modal-title">Registrar motivo localizado</h3><p>Essa informação fica salva neste navegador e acompanha as exportações.</p></div><button type="button" onClick={onClose} aria-label="Fechar">×</button></div><form onSubmit={(event) => { event.preventDefault(); onSave(entry.key, { ...marker, markedAt: marker.markedAt || new Date().toISOString(), updatedAt: new Date().toISOString(), staffIds, resolvedTime, note: note.trim() }); onClose() }}><fieldset><legend>Colaboradores envolvidos</legend><div className="review-modal-staff">{selectableStaff.map((person) => <label key={person.id} className={staffIds.includes(person.id) ? 'selected' : ''}><input type="checkbox" checked={staffIds.includes(person.id)} onChange={() => setStaffIds((current) => current.includes(person.id) ? current.filter((id) => id !== person.id) : [...current, person.id])} /><span>{person.name}</span><small>Trier nº {person.trierCode}</small></label>)}</div></fieldset><label>Horário em que o lançamento foi localizado<input type="time" value={resolvedTime} onChange={(event) => setResolvedTime(event.target.value)} /></label><label>Observação<textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Ex.: recebimento localizado no fechamento do caixa seguinte; horário informado incorretamente." /></label><div className="review-modal-actions">{entry.marker && <button className="review-reopen" type="button" onClick={() => { onRemove(entry.key); onClose() }}>Reabrir como pendente</button>}<button type="button" onClick={onClose}>Cancelar</button><button className="review-confirm" type="submit">Salvar como revisado</button></div></form></section></div>
 }
 
-function SalesTable({ rows, markers = {}, onSaveMarker, onRemoveMarker, onSetMarkers, markerKind, staff = DEFAULT_STAFF }) {
-  const [filters, setFilters] = useState({})
-  const [reviewFilter, setReviewFilter] = useState('all')
-  const [selectedStaff, setSelectedStaff] = useState([])
-  const [timeStart, setTimeStart] = useState('')
-  const [timeEnd, setTimeEnd] = useState('')
+function SalesTable({ rows, markers = {}, onSaveMarker, onRemoveMarker, onSetMarkers, markerKind, staff = DEFAULT_STAFF, viewKey = 'vendas' }) {
+  const { filters, setFilters, reviewFilter, setReviewFilter, selectedStaff, setSelectedStaff, timeStart, setTimeStart, timeEnd, setTimeEnd, scrollRef, saveScroll, activeFilterCount, clearTableFilters } = usePersistentTableUi(viewKey)
   const [editingReview, setEditingReview] = useState(null)
   const columns = [
     { key: 'sale', label: 'Nº venda', value: (row) => row.sale.numero },
@@ -300,7 +391,8 @@ function SalesTable({ rows, markers = {}, onSaveMarker, onRemoveMarker, onSetMar
     { key: 'operator', label: 'Vendedor Trier', value: (row) => staffNameForRow(row.sale, 'Trier', staff) },
     { key: 'receiptOperator', label: 'Operador PaggPix', value: (row) => row.recebimento && row.fonte === 'PaggPix' ? staffNameForRow(row.recebimento, 'PaggPix', staff) : '—' },
     { key: 'method', label: 'Forma', value: (row) => row.sale.forma || '—' },
-    { key: 'channel', label: 'Delivery/Balcão', value: (row) => row.sale.tele === 'Sim' ? 'Delivery' : 'Balcão' },
+    { key: 'channel', label: 'Canal Trier', value: trierChannel },
+    { key: 'channelComparison', label: 'Conferência do canal', value: channelComparison, render: (row) => <ChannelComparison row={row} /> },
     { key: 'saleValue', label: 'Valor venda', value: (row) => formatMoney(row.sale.valor) },
     { key: 'receivedValue', label: 'Valor recebido', value: (row) => row.recebimento ? formatMoney(row.recebimento.valor) : '—' },
     { key: 'source', label: 'Origem', value: (row) => row.fonte || '—' },
@@ -319,7 +411,7 @@ function SalesTable({ rows, markers = {}, onSaveMarker, onRemoveMarker, onSetMar
     return timeIsInRange(row.sale.hora, timeStart, timeEnd)
   })
   if (!rows.length) return <EmptyTable />
-  return <>{markerKind && <ReviewToolbar rows={keyedRows} markers={markers} reviewFilter={reviewFilter} onReviewFilter={setReviewFilter} onSetAll={onSetMarkers} staff={staff} selectedStaff={selectedStaff} onSelectedStaff={setSelectedStaff} timeStart={timeStart} timeEnd={timeEnd} onTimeStart={setTimeStart} onTimeEnd={setTimeEnd} />}<div className="table-meta"><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} registro(s).</div><div className="column-order-hint no-print">⠿ Arraste uma coluna ou use as setas para reorganizar</div></div><Table><thead><tr>{orderedColumns.map((column, index) => <ReorderableColumnHeader key={column.key} column={column} index={index} total={orderedColumns.length} onMove={moveColumn} onShift={shiftColumn} />)}</tr><FilterRow tableId="sales-filter" columns={orderedColumns} rows={keyedRows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
+  return <>{markerKind && <ReviewToolbar rows={keyedRows} markers={markers} reviewFilter={reviewFilter} onReviewFilter={setReviewFilter} onSetAll={onSetMarkers} staff={staff} selectedStaff={selectedStaff} onSelectedStaff={setSelectedStaff} timeStart={timeStart} timeEnd={timeEnd} onTimeStart={setTimeStart} onTimeEnd={setTimeEnd} />}<div className="table-meta"><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} registro(s).{activeFilterCount > 0 && <span className="active-filter-count">{activeFilterCount} filtro(s) ativo(s)</span>}</div><div className="table-meta-actions no-print">{activeFilterCount > 0 && <button type="button" className="clear-table-filters" onClick={clearTableFilters}>Limpar filtros</button>}<div className="column-order-hint">⠿ Arraste uma coluna ou use as setas para reorganizar</div></div></div><Table scrollRef={scrollRef} onScroll={saveScroll}><thead><tr>{orderedColumns.map((column, index) => <ReorderableColumnHeader key={column.key} column={column} index={index} total={orderedColumns.length} onMove={moveColumn} onShift={shiftColumn} />)}</tr><FilterRow tableId={`sales-filter-${viewKey}`} columns={orderedColumns} rows={keyedRows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
     {filteredRows.map((row) => { const sale = row.sale; const marker = markers[row.__markerKey]; return <tr className={marker ? 'manually-reconciled' : ''} key={row.__markerKey || `${sale.numero}-${row.status}`}>{orderedColumns.map((column) => <td key={column.key}>{column.render ? column.render(row) : column.value(row)}</td>)}</tr> })}
     {!filteredRows.length && <tr className="empty-row"><td colSpan={orderedColumns.length}>Nenhum registro corresponde aos filtros.</td></tr>}
   </tbody></Table>{editingReview && <ReviewEditor key={editingReview.key} entry={editingReview} staff={staff} onSave={onSaveMarker} onRemove={onRemoveMarker} onClose={() => setEditingReview(null)} />}</>
@@ -349,12 +441,8 @@ function DiscountAuditTable({ rows, staff = DEFAULT_STAFF }) {
   </tbody></Table></>
 }
 
-function NoSaleTable({ rows, markers = {}, onSaveMarker, onRemoveMarker, onSetMarkers, markerKind, staff = DEFAULT_STAFF }) {
-  const [filters, setFilters] = useState({})
-  const [reviewFilter, setReviewFilter] = useState('all')
-  const [selectedStaff, setSelectedStaff] = useState([])
-  const [timeStart, setTimeStart] = useState('')
-  const [timeEnd, setTimeEnd] = useState('')
+function NoSaleTable({ rows, markers = {}, onSaveMarker, onRemoveMarker, onSetMarkers, markerKind, staff = DEFAULT_STAFF, viewKey = 'recebimentos' }) {
+  const { filters, setFilters, reviewFilter, setReviewFilter, selectedStaff, setSelectedStaff, timeStart, setTimeStart, timeEnd, setTimeEnd, scrollRef, saveScroll, activeFilterCount, clearTableFilters } = usePersistentTableUi(viewKey)
   const [editingReview, setEditingReview] = useState(null)
   const columns = [
     { key: 'source', label: 'Origem', value: (row) => row.fonte },
@@ -376,13 +464,13 @@ function NoSaleTable({ rows, markers = {}, onSaveMarker, onRemoveMarker, onSetMa
     return timeIsInRange(row.hora, timeStart, timeEnd)
   })
   if (!rows.length) return <EmptyTable />
-  return <>{markerKind && <ReviewToolbar rows={keyedRows} markers={markers} reviewFilter={reviewFilter} onReviewFilter={setReviewFilter} onSetAll={onSetMarkers} staff={staff} selectedStaff={selectedStaff} onSelectedStaff={setSelectedStaff} timeStart={timeStart} timeEnd={timeEnd} onTimeStart={setTimeStart} onTimeEnd={setTimeEnd} />}<div className="table-meta"><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} registro(s).</div><div className="column-order-hint no-print">⠿ Arraste uma coluna ou use as setas para reorganizar</div></div><Table><thead><tr>{orderedColumns.map((column, index) => <ReorderableColumnHeader key={column.key} column={column} index={index} total={orderedColumns.length} onMove={moveColumn} onShift={shiftColumn} />)}</tr><FilterRow tableId="no-sale-filter" columns={orderedColumns} rows={keyedRows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
+  return <>{markerKind && <ReviewToolbar rows={keyedRows} markers={markers} reviewFilter={reviewFilter} onReviewFilter={setReviewFilter} onSetAll={onSetMarkers} staff={staff} selectedStaff={selectedStaff} onSelectedStaff={setSelectedStaff} timeStart={timeStart} timeEnd={timeEnd} onTimeStart={setTimeStart} onTimeEnd={setTimeEnd} />}<div className="table-meta"><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} registro(s).{activeFilterCount > 0 && <span className="active-filter-count">{activeFilterCount} filtro(s) ativo(s)</span>}</div><div className="table-meta-actions no-print">{activeFilterCount > 0 && <button type="button" className="clear-table-filters" onClick={clearTableFilters}>Limpar filtros</button>}<div className="column-order-hint">⠿ Arraste uma coluna ou use as setas para reorganizar</div></div></div><Table scrollRef={scrollRef} onScroll={saveScroll}><thead><tr>{orderedColumns.map((column, index) => <ReorderableColumnHeader key={column.key} column={column} index={index} total={orderedColumns.length} onMove={moveColumn} onShift={shiftColumn} />)}</tr><FilterRow tableId={`no-sale-filter-${viewKey}`} columns={orderedColumns} rows={keyedRows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
     {filteredRows.map((row, index) => { const marker = markers[row.__markerKey]; return <tr className={marker ? 'manually-reconciled' : ''} key={row.__markerKey || `${row.fonte}-${row.data}-${row.hora}-${row.valor}-${index}`}>{orderedColumns.map((column) => <td key={column.key}>{column.render ? column.render(row) : column.value(row)}</td>)}</tr> })}
     {!filteredRows.length && <tr className="empty-row"><td colSpan={orderedColumns.length}>Nenhum registro corresponde aos filtros.</td></tr>}
   </tbody></Table>{editingReview && <ReviewEditor key={editingReview.key} entry={editingReview} staff={staff} onSave={onSaveMarker} onRemove={onRemoveMarker} onClose={() => setEditingReview(null)} />}</>
 }
 
-function Table({ children }) { return <div className="table-frame"><div className="table-scroll"><table>{children}</table></div></div> }
+function Table({ children, scrollRef, onScroll }) { return <div className="table-frame"><div className="table-scroll" ref={scrollRef} onScroll={onScroll}><table>{children}</table></div></div> }
 function EmptyTable() { return <div className="table-frame p-7 text-center text-sm text-muted">Nada nessa categoria.</div> }
 
 function ClosingCreditSummary({ groups }) {
@@ -406,13 +494,13 @@ function exportRows(output, markers = {}, staff = DEFAULT_STAFF) {
   const closingReceipts = output.crediarioCartao ?? []
   return [
     ...sales.map((row) => ({
-      'Número da venda': row.sale.numero, Data: row.sale.data, 'Hora da venda': row.sale.hora || '', 'Vendedor Trier': staffNameForRow(row.sale, 'Trier', staff), 'Operador PaggPix': row.recebimento && row.fonte === 'PaggPix' ? staffNameForRow(row.recebimento, 'PaggPix', staff) : '', 'Forma de pagamento': row.sale.forma || '', 'Delivery/Balcão': row.sale.tele === 'Sim' ? 'Delivery' : 'Balcão', 'Valor da venda': row.sale.valor, 'Valor recebido': row.recebimento?.valor ?? '', Origem: row.fonte || '', 'Hora do recebimento': row.recebimento?.hora || '', 'Diferença de valor': row.diff ?? '', Status: STATUS_LABEL[row.status], ...markerExportFields(markers[row.__markerKey], staff, row.status === 'SEM_RECEBIMENTO'),
+      'Número da venda': row.sale.numero, Data: row.sale.data, 'Hora da venda': row.sale.hora || '', 'Vendedor Trier': staffNameForRow(row.sale, 'Trier', staff), 'Operador PaggPix': row.recebimento && row.fonte === 'PaggPix' ? staffNameForRow(row.recebimento, 'PaggPix', staff) : '', 'Forma de pagamento': row.sale.forma || '', 'Canal Trier': trierChannel(row) === '—' ? '' : trierChannel(row), 'Canal do recebimento': receiptChannel(row) === '—' ? '' : receiptChannel(row), 'Conferência de canal': channelComparison(row) === '—' ? '' : channelComparison(row), 'Valor da venda': row.sale.valor, 'Valor recebido': row.recebimento?.valor ?? '', Origem: row.fonte || '', 'Hora do recebimento': row.recebimento?.hora || '', 'Diferença de valor': row.diff ?? '', Status: STATUS_LABEL[row.status], ...markerExportFields(markers[row.__markerKey], staff, row.status === 'SEM_RECEBIMENTO'),
     })),
     ...receipts.map((row) => ({
-      'Número da venda': '', Data: row.data, 'Hora da venda': '', 'Vendedor Trier': '', 'Operador PaggPix': row.fonte === 'PaggPix' ? staffNameForRow(row, 'PaggPix', staff) : '', 'Forma de pagamento': '', 'Delivery/Balcão': row.tipo || row.bandeira || '', 'Valor da venda': '', 'Valor recebido': row.valor, Origem: row.fonte, 'Hora do recebimento': row.hora || '', 'Diferença de valor': '', Status: STATUS_LABEL[row.status], ...markerExportFields(markers[row.__markerKey], staff),
+      'Número da venda': '', Data: row.data, 'Hora da venda': '', 'Vendedor Trier': '', 'Operador PaggPix': row.fonte === 'PaggPix' ? staffNameForRow(row, 'PaggPix', staff) : '', 'Forma de pagamento': '', 'Canal Trier': '', 'Canal do recebimento': row.tipo || row.bandeira || '', 'Conferência de canal': '', 'Valor da venda': '', 'Valor recebido': row.valor, Origem: row.fonte, 'Hora do recebimento': row.hora || '', 'Diferença de valor': '', Status: STATUS_LABEL[row.status], ...markerExportFields(markers[row.__markerKey], staff),
     })),
     ...closingReceipts.map((row) => ({
-      'Número da venda': '', Data: row.data, 'Hora da venda': '', 'Vendedor Trier': '', 'Operador PaggPix': '', 'Forma de pagamento': '', 'Delivery/Balcão': row.tipo || row.bandeira || '', 'Valor da venda': '', 'Valor recebido': row.valor, Origem: 'Cielo / Fechamento de Caixa', 'Hora do recebimento': row.hora || '', 'Diferença de valor': '', Status: STATUS_LABEL[row.status], ...markerExportFields(null, staff, false),
+      'Número da venda': '', Data: row.data, 'Hora da venda': '', 'Vendedor Trier': '', 'Operador PaggPix': '', 'Forma de pagamento': '', 'Canal Trier': '', 'Canal do recebimento': row.tipo || row.bandeira || '', 'Conferência de canal': '', 'Valor da venda': '', 'Valor recebido': row.valor, Origem: 'Cielo / Fechamento de Caixa', 'Hora do recebimento': row.hora || '', 'Diferença de valor': '', Status: STATUS_LABEL[row.status], ...markerExportFields(null, staff, false),
     })),
   ]
 }
@@ -847,7 +935,7 @@ export default function App() {
   const [toleranceValue, setToleranceValue] = useState(0.5)
   const [toleranceHours, setToleranceHours] = useState(2)
   const [output, setOutput] = useState(null)
-  const [tab, setTab] = useState('resumo')
+  const [tab, setTab] = useState(loadResultTab)
   const [error, setError] = useState('')
   const [analystMarkers, setAnalystMarkers] = useState(loadAnalystMarkers)
   const [staff, setStaff] = useState(loadStaffDirectory)
@@ -867,6 +955,11 @@ export default function App() {
   useEffect(() => { window.localStorage.setItem(STAFF_STORAGE_KEY, JSON.stringify(staff)) }, [staff])
 
   useEffect(() => {
+    try { window.localStorage.setItem(RESULT_TAB_STORAGE_KEY, tab) }
+    catch { /* mantém a troca de abas funcionando mesmo sem armazenamento */ }
+  }, [tab])
+
+  useEffect(() => {
     let active = true
     loadReconciliationSession().then((saved) => {
       if (!active || !saved?.files) return
@@ -881,7 +974,6 @@ export default function App() {
       if (restoredFiles.trier && (restoredFiles.pagpix || restoredFiles.cielo)) {
         try {
           setOutput(reconcile(restoredFiles, Number(restoredValueTolerance) || 0, Number(restoredHourTolerance) || 0))
-          setTab('resumo')
         } catch {
           setHistoryMessage('Os relatórios foram restaurados. Execute a conciliação para atualizar o resultado.')
         }
@@ -966,7 +1058,7 @@ export default function App() {
 
   function runReconciliation() {
     setError('')
-    try { setOutput(reconcile(files, Number(toleranceValue) || 0, Number(toleranceHours) || 0)); setTab('resumo') }
+    try { setOutput(reconcile(files, Number(toleranceValue) || 0, Number(toleranceHours) || 0)) }
     catch (exception) { setOutput(null); setError(exception.message) }
   }
 
@@ -991,6 +1083,10 @@ export default function App() {
   const highDiscountMaxPercent = highDiscountRows.reduce((highest, sale) => Math.max(highest, Number(sale.descontoPercentual || 0)), 0)
   const kpis = [['Total de vendas', counts.total], ['Vendas PIX', counts.pix], ['Vendas cartão', counts.card], ['Conciliadas', counts.reconciled], ['Não conciliadas', counts.missing], ['PIX sem venda', counts.pixNoSale], ['Cartão sem venda', counts.cardNoSale], ...(fechamentoCrediario.length ? [['Crediário recebido no cartão', formatMoney(crediarioCartao.reduce((sum, row) => sum + row.valor, 0))]] : []), ['Recebimentos duplicados', counts.duplicates], ['Valor conciliado', formatMoney(matchedValue)], ['Valor divergente', formatMoney(divergentValue)], ['% conciliação', `${totalValue ? ((matchedValue / totalValue) * 100).toFixed(1) : '0.0'}%`]]
   const tabs = [['resumo', 'Resumo'], ['conciliada', `Conciliadas (${counts.reconciled})`], ['divergencia', `Divergências (${counts.divergent})`], ['sem_recebimento', `Sem recebimento (${counts.missing})`], ['sem_venda', `Sem venda (${noSale.length})`], ...(fechamentoCrediario.length ? [['crediario_cartao', `Crediário cartão (${crediarioCartao.length})`]] : []), ...(counts.returns ? [['devolucao', `Devoluções (${counts.returns})`]] : [])]
+
+  useEffect(() => {
+    if (output && !tabs.some(([key]) => key === tab)) setTab('resumo')
+  }, [output, tab, tabs.map(([key]) => key).join('|')])
 
   useEffect(() => {
     const syncWithBrowserNavigation = () => setActiveSystem(systemFromPathname(window.location.pathname))
@@ -1026,7 +1122,7 @@ export default function App() {
     {output && <section className="results-section"><div className="results-heading"><span className="section-kicker">Etapa 3</span><h2>Resultado da conciliação</h2><p>Revise os indicadores e filtre cada coluna para investigar os registros.</p></div><div className="kpi-grid">{kpis.map(([label, value]) => <div className="kpi" key={label}><div>{label}</div><strong>{value}</strong></div>)}</div>
       <div className="no-print tabs"><div className="tab-list">{tabs.map(([key, label]) => <button key={key} className={tab === key ? 'tab active' : 'tab'} onClick={() => setTab(key)}>{label}</button>)}</div><div className="export-list"><button onClick={() => downloadCsv(output, analystMarkers, staff)}>⇩ CSV</button><button onClick={() => downloadExcel(output, analystMarkers, staff)}>⇩ Excel</button><button onClick={() => window.print()}>⇩ PDF</button></div></div>
       {tab === 'resumo' && <div className="summary-card">Das <b>{counts.total}</b> vendas eletrônicas da Relação de Vendas, <b className="text-green">{counts.reconciled}</b> foram conciliadas, <b className="text-amber">{counts.divergent}</b> tiveram divergência de valor dentro da tolerância e <b className="text-rust">{counts.missing}</b> não encontraram recebimento correspondente.{noSale.length > 0 && <><br /><br />Também foram encontrados <b className="text-rust">{noSale.length}</b> recebimentos sem venda correspondente, sendo <b>{counts.duplicates}</b> identificados como possível duplicidade.</>}{crediarioCartao.length > 0 && <><br /><br /><b className="text-green">{crediarioCartao.length}</b> recebimento(s) da Cielo, somando <b>{formatMoney(crediarioCartao.reduce((sum, row) => sum + row.valor, 0))}</b>, foram identificados como <b>Contas Recebidas Crediário (Cartão)</b> pelo Fechamento de Caixa.</>}{counts.returns > 0 && <><br /><br /><b>{counts.returns}</b> linha(s) de devolução não entraram na conciliação, pois não representam recebimento a buscar.</>}<br /><br />Use as abas para revisar cada grupo ou exporte a tabela final em Excel, CSV ou PDF.</div>}
-      {tab === 'conciliada' && <SalesTable rows={results.filter((row) => row.status === 'CONCILIADA')} staff={staff} />}{tab === 'divergencia' && <SalesTable rows={results.filter((row) => row.status === 'DIVERGENCIA')} staff={staff} />}{tab === 'sem_recebimento' && <SalesTable rows={results.filter((row) => row.status === 'SEM_RECEBIMENTO')} markers={analystMarkers} onSaveMarker={saveAnalystMarker} onRemoveMarker={removeAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_recebimento" staff={staff} />}{tab === 'devolucao' && <SalesTable rows={results.filter((row) => row.status === 'DEVOLUCAO')} staff={staff} />}{tab === 'sem_venda' && <NoSaleTable rows={noSale} markers={analystMarkers} onSaveMarker={saveAnalystMarker} onRemoveMarker={removeAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_venda" staff={staff} />}{tab === 'crediario_cartao' && <><ClosingCreditSummary groups={fechamentoCrediario} /><NoSaleTable rows={crediarioCartao} staff={staff} /></>}
+      {tab === 'conciliada' && <SalesTable key="conciliada" viewKey="conciliada" rows={results.filter((row) => row.status === 'CONCILIADA')} staff={staff} />}{tab === 'divergencia' && <SalesTable key="divergencia" viewKey="divergencia" rows={results.filter((row) => row.status === 'DIVERGENCIA')} staff={staff} />}{tab === 'sem_recebimento' && <SalesTable key="sem_recebimento" viewKey="sem_recebimento" rows={results.filter((row) => row.status === 'SEM_RECEBIMENTO')} markers={analystMarkers} onSaveMarker={saveAnalystMarker} onRemoveMarker={removeAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_recebimento" staff={staff} />}{tab === 'devolucao' && <SalesTable key="devolucao" viewKey="devolucao" rows={results.filter((row) => row.status === 'DEVOLUCAO')} staff={staff} />}{tab === 'sem_venda' && <NoSaleTable key="sem_venda" viewKey="sem_venda" rows={noSale} markers={analystMarkers} onSaveMarker={saveAnalystMarker} onRemoveMarker={removeAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_venda" staff={staff} />}{tab === 'crediario_cartao' && <><ClosingCreditSummary groups={fechamentoCrediario} /><NoSaleTable key="crediario_cartao" viewKey="crediario_cartao" rows={crediarioCartao} staff={staff} /></>}
     </section>}
     <footer className="app-footer"><img src={assetPath('drogaria-center-logo.png')} alt="Drogaria Center" /><span>Conciliação segura, simples e local.</span></footer>
   </div></main>

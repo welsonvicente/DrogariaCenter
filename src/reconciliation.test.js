@@ -44,6 +44,78 @@ test('cadastro identifica novo vendedor pelo número da Trier e pelo nome do Pag
   assert.equal(resolveOperator(pagpix, 'PaggPix', staff)?.id, 'joao')
 })
 
+test('concilia PIX do mesmo vendedor quando Trier e PaggPix divergem entre Delivery e Balcão', () => {
+  const trier = parseTrierLines([
+    '286363 1 PIX Sim 02/10/26 09:57 65 95778 DELIVERY 8 41,99 16,67 -7,00 34,99 34,99',
+  ])
+  const pagpix = [{
+    data: '02/10/2026', hora: '09:53:28', tipo: 'Balcao', operador: '8', operadorOriginal: 'KATIA REJANE DO NASCIMENTO', status: 'PAGO', valor: 34.99, raw: '02/10/2026, 09:53:28 balcao KATIA REJANE DO NASCIMENTO PAGO R$ 34,99',
+  }]
+  const output = reconcile({ trier: { rows: trier }, pagpix: { rows: pagpix }, cielo: { rows: [] }, fechamento: { rows: [] } }, 0.5, 3)
+  const result = output.results.find((row) => row.sale.numero === '286363')
+  assert.equal(result.status, 'CONCILIADA')
+  assert.equal(result.recebimento.hora, '09:53:28')
+  assert.equal(result.canalTrier, 'Delivery')
+  assert.equal(result.canalRecebimento, 'Balcao')
+  assert.equal(result.canalDivergente, true)
+  assert.match(result.motivo, /Canal divergente/)
+  assert.equal(output.semVenda.length, 0)
+})
+
+test('não cruza Delivery e Balcão quando os vendedores são diferentes', () => {
+  const trier = parseTrierLines([
+    '286363 1 PIX Sim 02/10/26 09:57 65 95778 DELIVERY 8 41,99 16,67 -7,00 34,99 34,99',
+  ])
+  const pagpix = [{
+    data: '02/10/2026', hora: '09:53:28', tipo: 'Balcao', operador: '13', operadorOriginal: 'CLAUDIA RODRIGUES DA SILVA ARAUJO', status: 'PAGO', valor: 34.99, raw: '02/10/2026, 09:53:28 balcao CLAUDIA RODRIGUES DA SILVA ARAUJO PAGO R$ 34,99',
+  }]
+  const output = reconcile({ trier: { rows: trier }, pagpix: { rows: pagpix }, cielo: { rows: [] }, fechamento: { rows: [] } }, 0.5, 3)
+  assert.equal(output.results.find((row) => row.sale.numero === '286363').status, 'SEM_RECEBIMENTO')
+  assert.equal(output.semVenda.length, 1)
+})
+
+test('concilia a venda 286586 com a Cielo de R$ 171,90 um minuto antes', () => {
+  const trier = parseTrierLines([
+    '286586 1 CARTAO 02/10/26 21:25 65 95974 1 219,87 21,82 -47,97 171,90 0,00 171,90',
+  ])
+  const cielo = parseCieloLines([
+    '02/10/2026 21:24 2891818657 45.595.257/0001-71 Crédito parcelado loja 04 Mastercard R$ 171,90 Aprovada',
+  ])
+  const output = reconcile({ trier: { rows: trier }, cielo: { rows: cielo }, pagpix: { rows: [] }, fechamento: { rows: [] } }, 0.5, 3)
+  const result = output.results.find((row) => row.sale.numero === '286586')
+  assert.equal(result.status, 'CONCILIADA')
+  assert.equal(result.fonte, 'Cielo')
+  assert.equal(result.recebimento.hora, '21:24')
+  assert.equal(result.recebimento.valor, 171.90)
+  assert.equal(result.diff, 0)
+  assert.equal(output.semVenda.length, 0)
+})
+
+test('usa separadamente os dois pagamentos Cielo de R$ 10,00 e mantém os R$ 171,90', () => {
+  const trier = parseTrierLines([
+    '286311 1 CARTAO Sim 02/10/26 08:00 65 95730 DELIVERY 4 11,99 16,60 -1,99 10,00 10,00',
+    '286359 1 CARTAO Sim 02/10/26 09:50 65 95777 DELIVERY 3 9,99 0,00 0,00 9,99 9,99',
+    '286586 1 CARTAO 02/10/26 21:25 65 95974 1 219,87 21,82 -47,97 171,90 0,00 171,90',
+  ])
+  const cielo = parseCieloLines([
+    '02/10/2026 08:00 Débito à vista Visa R$ 10,00 Aprovada',
+    '02/10/2026 08:32 Débito à vista Mastercard R$ 10,00 Aprovada',
+    '02/10/2026 21:24 Crédito parcelado loja 04 Mastercard R$ 171,90 Aprovada',
+  ])
+  const output = reconcile({ trier: { rows: trier }, cielo: { rows: cielo }, pagpix: { rows: [] }, fechamento: { rows: [] } }, 0.5, 2)
+  const bySale = new Map(output.results.map((row) => [row.sale.numero, row]))
+
+  assert.equal(bySale.get('286311').status, 'CONCILIADA')
+  assert.equal(bySale.get('286311').recebimento.hora, '08:00')
+  assert.equal(bySale.get('286311').recebimento.bandeira, 'VISA')
+  assert.equal(bySale.get('286359').status, 'DIVERGENCIA')
+  assert.equal(bySale.get('286359').recebimento.hora, '08:32')
+  assert.equal(bySale.get('286359').recebimento.bandeira, 'MASTERCARD')
+  assert.equal(bySale.get('286586').status, 'CONCILIADA')
+  assert.equal(bySale.get('286586').recebimento.hora, '21:24')
+  assert.equal(output.semVenda.length, 0)
+})
+
 test('extrai contas recebidas crediário no cartão do fechamento', () => {
   const rows = parseFechamentoLines([
     'Período: 30/07/2026 à 30/07/2026',

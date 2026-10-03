@@ -529,6 +529,10 @@
 .table-meta { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
 .filter-result { margin: 0 0 8px; color: var(--muted); font-size: 11px; font-weight: 650; }
 .table-meta .filter-result { margin: 0; }
+.active-filter-count { display: inline-flex; margin-left: 7px; border-radius: 999px; background: #fff0d1; padding: 3px 7px; color: #8b5b00; font-size: 9px; font-weight: 850; }
+.table-meta-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.clear-table-filters { min-height: 30px; border: 1px solid #e8b8bf; border-radius: 9px; background: #fff7f8; padding: 5px 9px; color: var(--brand-red-dark); font-size: 9px; font-weight: 850; }
+.clear-table-filters:hover { background: var(--brand-red-soft); }
 .column-order-hint { color: #8c767b; font-size: 9.5px; font-weight: 650; }
 .reorderable-column { padding: 0; }
 .column-heading { display: flex; min-width: max-content; align-items: center; gap: 5px; padding: 10px 7px; cursor: grab; user-select: none; }
@@ -628,6 +632,11 @@
 .status-SEM_RECEBIMENTO, .status-RECEBIMENTO_SEM_VENDA { background: #ffe9ec; color: #b00015; }
 .status-DUPLICADO { background: #f2e9f8; color: #744195; }
 .status-DEVOLUCAO { background: #f1edef; color: #75666a; }
+.channel-check { display: inline-flex; min-width: 130px; flex-direction: column; gap: 2px; border-radius: 10px; padding: 6px 8px; line-height: 1.2; }
+.channel-check b { font-size: 9px; white-space: nowrap; }
+.channel-check small { font-size: 8px; font-weight: 700; white-space: nowrap; }
+.channel-check.compatible { background: #effbd9; color: #527e00; }
+.channel-check.divergent { border: 1px solid #f0d18c; background: #fff4d6; color: #946000; }
 .closing-credit-groups { display: grid; gap: 10px; margin-bottom: 14px; }
 .closing-credit-groups article { display: grid; gap: 14px; border: 1px solid #d9e9e5; border-radius: 17px; background: linear-gradient(145deg, #f3fffc, #fff); padding: 16px; box-shadow: var(--shadow); }
 .closing-credit-groups article.pending { border-color: #f0d7a1; background: linear-gradient(145deg, #fffaf0, #fff); }
