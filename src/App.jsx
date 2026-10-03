@@ -9,6 +9,7 @@ import {
 const EMPTY_FILES = { trier: null, pagpix: null, cielo: null, fechamento: null }
 const ANALYST_MARKERS_STORAGE_KEY = 'drogaria-center:trier:analyst-markers:v1'
 const STAFF_STORAGE_KEY = 'drogaria-center:trier:staff-directory:v1'
+const STAFF_MIGRATION_KEY = 'drogaria-center:trier:staff-directory:migration:v2'
 const RESULT_TAB_STORAGE_KEY = 'drogaria-center:trier:result-tab:v1'
 const TABLE_UI_STORAGE_PREFIX = 'drogaria-center:trier:table-ui:v1:'
 const APP_BASE_PATH = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`
@@ -22,7 +23,7 @@ const SOURCES = {
   fechamento: { title: 'Fechamento de Caixa', hint: 'Opcional', color: 'bg-muted', step: '04', badge: 'Opcional' },
 }
 
-const DEFAULT_STAFF = Object.entries(OPERADORES).map(([trierCode, name]) => ({
+const DEFAULT_STAFF = Object.entries(OPERADORES).filter(([trierCode]) => trierCode !== '17').map(([trierCode, name]) => ({
   id: `trier-${trierCode}`,
   name,
   trierCode,
@@ -33,7 +34,15 @@ const DEFAULT_STAFF = Object.entries(OPERADORES).map(([trierCode, name]) => ({
 function loadStaffDirectory() {
   try {
     const saved = JSON.parse(window.localStorage.getItem(STAFF_STORAGE_KEY) || 'null')
-    if (Array.isArray(saved) && saved.length) return saved.map((person) => ({ ...person, pagpixAliases: Array.isArray(person.pagpixAliases) ? person.pagpixAliases : [], active: person.active !== false }))
+    let directory = Array.isArray(saved) && saved.length ? saved : DEFAULT_STAFF
+    if (window.localStorage.getItem(STAFF_MIGRATION_KEY) !== 'done') {
+      directory = directory.filter((person) => String(person.trierCode) !== '17' && !/^jos[eé]\s+ramos\s+da\s+silva\s+junior$/i.test(person.name || ''))
+      const joao = { id: 'trier-12', name: 'Joao Victor Dornelas de Araujo', trierCode: '12', pagpixAliases: ['JOAO VICTOR DORNELAS DE ARAUJO'], active: true }
+      directory = [...directory.filter((person) => String(person.trierCode) !== '12'), joao]
+      window.localStorage.setItem(STAFF_STORAGE_KEY, JSON.stringify(directory))
+      window.localStorage.setItem(STAFF_MIGRATION_KEY, 'done')
+    }
+    return directory.map((person) => ({ ...person, pagpixAliases: Array.isArray(person.pagpixAliases) ? person.pagpixAliases : [], active: person.active !== false }))
   } catch { /* usa a equipe inicial */ }
   return DEFAULT_STAFF
 }
@@ -399,7 +408,7 @@ function ReorderableColumnHeader({ column, index, total, onMove, onShift }) {
   </th>
 }
 
-function StaffDirectory({ staff, onSave, onToggleActive }) {
+function StaffDirectory({ staff, onSave, onToggleActive, onDelete }) {
   const emptyForm = { id: '', name: '', trierCode: '', pagpixAliases: '' }
   const [form, setForm] = useState(emptyForm)
   const [message, setMessage] = useState('')
@@ -423,6 +432,12 @@ function StaffDirectory({ staff, onSave, onToggleActive }) {
     setMessage('')
   }
 
+  function remove(person) {
+    if (!onDelete(person)) return
+    if (form.id === person.id) setForm(emptyForm)
+    setMessage(`${person.name} foi apagado da equipe. Relatórios históricos continuam preservados.`)
+  }
+
   return <details className="staff-directory no-print">
     <summary><span className="staff-directory-icon">♟</span><span><b>Equipe e identificação dos vendedores</b><small>{activeCount} ativo(s) · relacione o número da Trier ao nome exibido no PaggPix</small></span><strong>Gerenciar equipe</strong></summary>
     <div className="staff-directory-body">
@@ -434,7 +449,7 @@ function StaffDirectory({ staff, onSave, onToggleActive }) {
         <button className="staff-save" type="submit">{form.id ? 'Salvar alterações' : 'Adicionar à equipe'}</button>
         {message && <p className="staff-message">{message}</p>}
       </form>
-      <div className="staff-list">{[...staff].sort((a, b) => Number(b.active !== false) - Number(a.active !== false) || a.name.localeCompare(b.name, 'pt-BR')).map((person) => <article className={person.active === false ? 'inactive' : ''} key={person.id}><div><b>{person.name}</b><small>Trier nº {person.trierCode} · PaggPix: {(person.pagpixAliases ?? []).join(', ') || person.name}</small></div><span>{person.active === false ? 'Inativo' : 'Ativo'}</span><button type="button" onClick={() => edit(person)}>Editar</button><button type="button" onClick={() => onToggleActive(person.id)}>{person.active === false ? 'Reativar' : 'Desativar'}</button></article>)}</div>
+      <div className="staff-list">{[...staff].sort((a, b) => Number(b.active !== false) - Number(a.active !== false) || a.name.localeCompare(b.name, 'pt-BR')).map((person) => <article className={person.active === false ? 'inactive' : ''} key={person.id}><div><b>{person.name}</b><small>Trier nº {person.trierCode} · PaggPix: {(person.pagpixAliases ?? []).join(', ') || person.name}</small></div><span>{person.active === false ? 'Inativo' : 'Ativo'}</span><button type="button" onClick={() => edit(person)}>Editar</button><button type="button" onClick={() => onToggleActive(person.id)}>{person.active === false ? 'Reativar' : 'Desativar'}</button><button type="button" className="staff-delete" onClick={() => remove(person)}>Apagar</button></article>)}</div>
     </div>
   </details>
 }
@@ -1260,6 +1275,12 @@ export default function App() {
     setStaff((current) => current.map((person) => person.id === personId ? { ...person, active: person.active === false } : person))
   }
 
+  function deleteStaffMember(person) {
+    if (!window.confirm(`Apagar ${person.name} da equipe? O cadastro será removido deste navegador, mas os dados dos relatórios já importados não serão apagados.`)) return false
+    setStaff((current) => current.filter((item) => item.id !== person.id))
+    return true
+  }
+
   async function clearSavedHistory() {
     if (!window.confirm('Limpar os relatórios salvos neste navegador? Os arquivos importados e o resultado atual serão removidos.')) return
     try {
@@ -1457,7 +1478,7 @@ export default function App() {
       <div className="hero-mark" aria-hidden="true">+</div>
     </header>
     <section className="section-heading no-print"><div><span className="section-kicker">Etapa 1</span><h2>Importe os relatórios</h2><p>Comece pela Relação de Vendas e adicione pelo menos uma fonte de recebimentos.</p></div><div className="privacy-note"><span>✓</span> Seus arquivos não saem deste dispositivo</div></section>
-    <StaffDirectory staff={staff} onSave={saveStaffMember} onToggleActive={toggleStaffActive} />
+    <StaffDirectory staff={staff} onSave={saveStaffMember} onToggleActive={toggleStaffActive} onDelete={deleteStaffMember} />
     <SavedReportsPanel files={files} savedAt={historySavedAt} restoring={!historyReady} message={historyMessage} onClear={clearSavedHistory} />
     <section className="no-print upload-grid">{Object.entries(SOURCES).map(([key, source]) => <FileSlot key={key} source={source} file={files[key]} onFile={(file) => handleFile(key, file)} />)}</section>
     {error && <div role="alert" className="error-box">{error}</div>}

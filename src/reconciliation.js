@@ -2,9 +2,12 @@ export const OPERADORES = {
   3: 'Rinaldo Ramos da Silva',
   4: 'José Wesley de Souza Maranhão',
   8: 'Katia Rejane do Nascimento',
+  12: 'Joao Victor Dornelas de Araujo',
   13: 'Claudia Rodrigues da Silva Araújo',
   15: 'Willian Cesar Ramos de Souza',
   16: 'Deuzeni Maria da Silva',
+  // Mantido para identificar corretamente relatórios históricos. O vendedor
+  // não faz mais parte da equipe ativa exibida no cadastro.
   17: 'José Ramos da Silva Junior',
   19: 'Shakira Kessia Santana de Souza',
 }

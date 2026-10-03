@@ -571,6 +571,7 @@
 .staff-list article > span { border-radius: 999px; background: #effbd7; padding: 4px 7px; color: #527700; font-size: 8px; font-weight: 850; }
 .staff-list article.inactive > span { background: #ece7e8; color: #77696c; }
 .staff-list article > button { min-height: 30px; border: 1px solid #eadadd; border-radius: 8px; background: white; color: #715d62; font-size: 9px; font-weight: 800; }
+.staff-list article > button.staff-delete { border-color: #f0c6cc; background: #fff3f5; color: var(--brand-red-dark); }
 .analyst-review-toolbar { display: flex; flex-direction: column; gap: 12px; margin-bottom: 10px; border: 1px solid #dcebb8; border-radius: 15px; background: linear-gradient(135deg, #fbfff2, #fff); padding: 12px; }
 .analyst-review-copy { display: flex; align-items: center; gap: 10px; }
 .analyst-review-copy > div { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
@@ -812,7 +813,7 @@
   .manual-payment-description { grid-column: span 3; }
   .saved-reports-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .staff-directory-body { grid-template-columns: minmax(270px, .8fr) minmax(360px, 1.2fr); }
-  .staff-list article { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+  .staff-list article { grid-template-columns: minmax(0, 1fr) auto auto auto auto; }
   .review-advanced-filters { min-width: 430px; }
   .review-time-range { grid-template-columns: 130px 130px 1fr; align-items: end; }
   .review-time-range button { grid-column: auto; }
