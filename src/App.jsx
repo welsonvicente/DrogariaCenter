@@ -3,7 +3,7 @@ import CotacaoScreen from './CotacaoScreen.jsx'
 import { clearReconciliationSession, loadReconciliationSession, saveReconciliationSession } from './browserStorage.js'
 import {
   extractPdfLines, findHighDiscountSales, formatMoney, OPERADORES, operatorName, parseCieloLines, parseFechamentoLines, parsePagPixLines,
-  parsePagPixSpreadsheet, parseTrierLines, parseTrierSpreadsheet, reconcile, resolveOperator, STATUS_LABEL,
+  parsePagPixSpreadsheet, parseTrierLines, parseTrierSpreadsheet, reconcile, reconciliationReceiptKey, reconciliationSaleKey, resolveOperator, STATUS_LABEL,
 } from './reconciliation.js'
 
 const EMPTY_FILES = { trier: null, pagpix: null, cielo: null, fechamento: null }
@@ -117,6 +117,28 @@ function minutesFromTime(value) {
   return match ? Number(match[1]) * 60 + Number(match[2]) : null
 }
 
+function secondsFromTime(value) {
+  const match = String(value ?? '').match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/)
+  return match ? Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3] || 0) : null
+}
+
+function receiptTimeDifference(row) {
+  const saleSeconds = secondsFromTime(row.sale?.hora)
+  const receiptSeconds = secondsFromTime(row.recebimento?.hora)
+  if (saleSeconds === null || receiptSeconds === null) return null
+  const difference = Math.abs(saleSeconds - receiptSeconds)
+  if (difference === 0) return { seconds: 0, label: 'mesmo horário' }
+  const hours = Math.floor(difference / 3600)
+  const minutes = Math.floor((difference % 3600) / 60)
+  const seconds = difference % 60
+  const parts = []
+  if (hours) parts.push(`${hours}h`)
+  if (minutes) parts.push(`${minutes}min`)
+  if (seconds && !hours) parts.push(`${seconds}s`)
+  const direction = receiptSeconds < saleSeconds ? 'antes da venda' : 'depois da venda'
+  return { seconds: difference, label: `${parts.join(' ')} ${direction}` }
+}
+
 function timeIsInRange(value, start, end) {
   const current = minutesFromTime(value)
   const startMinutes = minutesFromTime(start)
@@ -175,21 +197,30 @@ function receiptChannel(row) {
 }
 
 function channelComparison(row) {
-  if (row.fonte !== 'PaggPix' || !row.recebimento) return '—'
+  if (!row.recebimento) return '—'
+  const timing = receiptTimeDifference(row)
+  const timingText = timing ? ` · Diferença: ${timing.label}` : ''
+  if (row.fonte !== 'PaggPix') return `${row.fonte || 'Recebimento'}${timingText}`
   const trier = trierChannel(row)
   const receipt = receiptChannel(row)
   return row.canalDivergente || trier !== receipt
-    ? `Divergente · Trier ${trier} → PaggPix ${receipt}`
-    : `Compatível · ${trier}`
+    ? `Divergente · Trier ${trier} → PaggPix ${receipt}${timingText}`
+    : `Compatível · ${trier}${timingText}`
 }
 
 function ChannelComparison({ row }) {
-  const value = channelComparison(row)
-  if (value === '—') return <span>—</span>
-  const divergent = value.startsWith('Divergente')
-  return <span className={divergent ? 'channel-check divergent' : 'channel-check compatible'}>
-    <b>{divergent ? '⚠ Canal divergente' : '✓ Mesmo canal'}</b>
-    <small>{divergent ? `Trier: ${trierChannel(row)} → PaggPix: ${receiptChannel(row)}` : trierChannel(row)}</small>
+  if (!row.recebimento) return <span>—</span>
+  const timing = receiptTimeDifference(row)
+  const divergent = row.fonte === 'PaggPix' && (row.canalDivergente || trierChannel(row) !== receiptChannel(row))
+  const status = row.status === 'DIVERGENCIA' ? 'Valor divergente' : divergent ? 'Canal divergente' : 'Recebimento conciliado'
+  const channel = row.fonte === 'PaggPix'
+    ? (divergent ? `Trier: ${trierChannel(row)} → PaggPix: ${receiptChannel(row)}` : `Canal: ${trierChannel(row)}`)
+    : `${row.fonte || 'Recebimento'} · ${formatMoney(row.recebimento.valor)}`
+  return <span className={`channel-check ${divergent || row.status === 'DIVERGENCIA' ? 'divergent' : 'compatible'}`}>
+    <b>{divergent || row.status === 'DIVERGENCIA' ? '⚠' : '✓'} {status}</b>
+    <small>{channel}</small>
+    <small>Venda: {row.sale.hora || '—'} · Receb.: {row.recebimento.hora || '—'}</small>
+    {timing && <em className={timing.seconds ? 'time-difference' : 'time-difference exact'}>⏱ Diferença de horário: {timing.label}</em>}
   </span>
 }
 
@@ -372,6 +403,12 @@ function AnalystMarker({ marker, onOpen, staff }) {
   </button>
 }
 
+function ReconciliationAction({ row, onUnconcile, onRestore }) {
+  if (row.manualUnmatch && onRestore) return <button type="button" className="reconciliation-action restore" onClick={() => onRestore(row)} title="Voltar a considerar este par na conciliação">↶ Restaurar</button>
+  if (row.recebimento && onUnconcile) return <button type="button" className="reconciliation-action" onClick={() => onUnconcile(row)} title="Desfazer esta conciliação e devolver aos pendentes">↶ Desconciliar</button>
+  return null
+}
+
 function ReviewEditor({ entry, staff, onSave, onRemove, onClose }) {
   const marker = entry.marker ?? {}
   const [staffIds, setStaffIds] = useState(marker.staffIds ?? [])
@@ -381,7 +418,7 @@ function ReviewEditor({ entry, staff, onSave, onRemove, onClose }) {
   return <div className="review-modal-backdrop no-print" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="review-modal" role="dialog" aria-modal="true" aria-labelledby="review-modal-title"><div className="review-modal-heading"><div><span className="section-kicker">Revisão manual</span><h3 id="review-modal-title">Registrar motivo localizado</h3><p>Essa informação fica salva neste navegador e acompanha as exportações.</p></div><button type="button" onClick={onClose} aria-label="Fechar">×</button></div><form onSubmit={(event) => { event.preventDefault(); onSave(entry.key, { ...marker, markedAt: marker.markedAt || new Date().toISOString(), updatedAt: new Date().toISOString(), staffIds, resolvedTime, note: note.trim() }); onClose() }}><fieldset><legend>Colaboradores envolvidos</legend><div className="review-modal-staff">{selectableStaff.map((person) => <label key={person.id} className={staffIds.includes(person.id) ? 'selected' : ''}><input type="checkbox" checked={staffIds.includes(person.id)} onChange={() => setStaffIds((current) => current.includes(person.id) ? current.filter((id) => id !== person.id) : [...current, person.id])} /><span>{person.name}</span><small>Trier nº {person.trierCode}</small></label>)}</div></fieldset><label>Horário em que o lançamento foi localizado<input type="time" value={resolvedTime} onChange={(event) => setResolvedTime(event.target.value)} /></label><label>Observação<textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Ex.: recebimento localizado no fechamento do caixa seguinte; horário informado incorretamente." /></label><div className="review-modal-actions">{entry.marker && <button className="review-reopen" type="button" onClick={() => { onRemove(entry.key); onClose() }}>Reabrir como pendente</button>}<button type="button" onClick={onClose}>Cancelar</button><button className="review-confirm" type="submit">Salvar como revisado</button></div></form></section></div>
 }
 
-function SalesTable({ rows, markers = {}, onSaveMarker, onRemoveMarker, onSetMarkers, markerKind, staff = DEFAULT_STAFF, viewKey = 'vendas' }) {
+function SalesTable({ rows, markers = {}, onSaveMarker, onRemoveMarker, onSetMarkers, markerKind, staff = DEFAULT_STAFF, viewKey = 'vendas', onUnconcile, onRestore }) {
   const { filters, setFilters, reviewFilter, setReviewFilter, selectedStaff, setSelectedStaff, timeStart, setTimeStart, timeEnd, setTimeEnd, scrollRef, saveScroll, activeFilterCount, clearTableFilters } = usePersistentTableUi(viewKey)
   const [editingReview, setEditingReview] = useState(null)
   const columns = [
@@ -399,6 +436,7 @@ function SalesTable({ rows, markers = {}, onSaveMarker, onRemoveMarker, onSetMar
     { key: 'receivedTime', label: 'Hora receb.', value: (row) => row.recebimento?.hora || '—' },
     { key: 'difference', label: 'Diferença', value: (row) => row.diff !== undefined ? formatMoney(row.diff) : '—' },
     { key: 'status', label: 'Status', value: (row) => STATUS_LABEL[row.status], render: (row) => <StatusPill status={row.status} /> },
+    ...((onUnconcile || onRestore) ? [{ key: 'reconciliationAction', label: 'Ação', filterable: false, value: () => '', render: (row) => <ReconciliationAction row={row} onUnconcile={onUnconcile} onRestore={onRestore} /> }] : []),
     ...(markerKind ? [{ key: 'analysis', label: 'Análise', filterable: false, value: () => '', render: (row) => <AnalystMarker marker={markers[row.__markerKey]} staff={staff} onOpen={() => setEditingReview({ key: row.__markerKey, marker: markers[row.__markerKey], defaultTime: row.sale.hora })} /> }] : []),
   ]
   const { orderedColumns, moveColumn, shiftColumn } = useReorderableColumns(columns, 'drogaria-center:trier:sales-column-order:v1')
@@ -441,7 +479,7 @@ function DiscountAuditTable({ rows, staff = DEFAULT_STAFF }) {
   </tbody></Table></>
 }
 
-function NoSaleTable({ rows, markers = {}, onSaveMarker, onRemoveMarker, onSetMarkers, markerKind, staff = DEFAULT_STAFF, viewKey = 'recebimentos' }) {
+function NoSaleTable({ rows, markers = {}, onSaveMarker, onRemoveMarker, onSetMarkers, markerKind, staff = DEFAULT_STAFF, viewKey = 'recebimentos', onRestore }) {
   const { filters, setFilters, reviewFilter, setReviewFilter, selectedStaff, setSelectedStaff, timeStart, setTimeStart, timeEnd, setTimeEnd, scrollRef, saveScroll, activeFilterCount, clearTableFilters } = usePersistentTableUi(viewKey)
   const [editingReview, setEditingReview] = useState(null)
   const columns = [
@@ -452,6 +490,7 @@ function NoSaleTable({ rows, markers = {}, onSaveMarker, onRemoveMarker, onSetMa
     { key: 'type', label: 'Tipo/Bandeira', value: (row) => row.tipo || row.bandeira || '—' },
     { key: 'value', label: 'Valor', value: (row) => formatMoney(row.valor) },
     { key: 'status', label: 'Status', value: (row) => STATUS_LABEL[row.status], render: (row) => <StatusPill status={row.status} /> },
+    ...(onRestore ? [{ key: 'reconciliationAction', label: 'Ação', filterable: false, value: () => '', render: (row) => <ReconciliationAction row={row} onRestore={onRestore} /> }] : []),
     ...(markerKind ? [{ key: 'analysis', label: 'Análise', filterable: false, value: () => '', render: (row) => <AnalystMarker marker={markers[row.__markerKey]} staff={staff} onOpen={() => setEditingReview({ key: row.__markerKey, marker: markers[row.__markerKey], defaultTime: row.hora })} /> }] : []),
   ]
   const { orderedColumns, moveColumn, shiftColumn } = useReorderableColumns(columns, 'drogaria-center:trier:no-sale-column-order:v1')
@@ -494,10 +533,10 @@ function exportRows(output, markers = {}, staff = DEFAULT_STAFF) {
   const closingReceipts = output.crediarioCartao ?? []
   return [
     ...sales.map((row) => ({
-      'Número da venda': row.sale.numero, Data: row.sale.data, 'Hora da venda': row.sale.hora || '', 'Vendedor Trier': staffNameForRow(row.sale, 'Trier', staff), 'Operador PaggPix': row.recebimento && row.fonte === 'PaggPix' ? staffNameForRow(row.recebimento, 'PaggPix', staff) : '', 'Forma de pagamento': row.sale.forma || '', 'Canal Trier': trierChannel(row) === '—' ? '' : trierChannel(row), 'Canal do recebimento': receiptChannel(row) === '—' ? '' : receiptChannel(row), 'Conferência de canal': channelComparison(row) === '—' ? '' : channelComparison(row), 'Valor da venda': row.sale.valor, 'Valor recebido': row.recebimento?.valor ?? '', Origem: row.fonte || '', 'Hora do recebimento': row.recebimento?.hora || '', 'Diferença de valor': row.diff ?? '', Status: STATUS_LABEL[row.status], ...markerExportFields(markers[row.__markerKey], staff, row.status === 'SEM_RECEBIMENTO'),
+      'Número da venda': row.sale.numero, Data: row.sale.data, 'Hora da venda': row.sale.hora || '', 'Vendedor Trier': staffNameForRow(row.sale, 'Trier', staff), 'Operador PaggPix': row.recebimento && row.fonte === 'PaggPix' ? staffNameForRow(row.recebimento, 'PaggPix', staff) : '', 'Forma de pagamento': row.sale.forma || '', 'Canal Trier': trierChannel(row) === '—' ? '' : trierChannel(row), 'Canal do recebimento': receiptChannel(row) === '—' ? '' : receiptChannel(row), 'Conferência de canal': channelComparison(row) === '—' ? '' : channelComparison(row), 'Valor da venda': row.sale.valor, 'Valor recebido': row.recebimento?.valor ?? '', Origem: row.fonte || '', 'Hora do recebimento': row.recebimento?.hora || '', 'Diferença de valor': row.diff ?? '', Status: STATUS_LABEL[row.status], 'Motivo da conciliação': row.motivo || '', 'Ação manual': row.manualUnmatch ? 'Desconciliado manualmente' : '', ...markerExportFields(markers[row.__markerKey], staff, row.status === 'SEM_RECEBIMENTO'),
     })),
     ...receipts.map((row) => ({
-      'Número da venda': '', Data: row.data, 'Hora da venda': '', 'Vendedor Trier': '', 'Operador PaggPix': row.fonte === 'PaggPix' ? staffNameForRow(row, 'PaggPix', staff) : '', 'Forma de pagamento': '', 'Canal Trier': '', 'Canal do recebimento': row.tipo || row.bandeira || '', 'Conferência de canal': '', 'Valor da venda': '', 'Valor recebido': row.valor, Origem: row.fonte, 'Hora do recebimento': row.hora || '', 'Diferença de valor': '', Status: STATUS_LABEL[row.status], ...markerExportFields(markers[row.__markerKey], staff),
+      'Número da venda': '', Data: row.data, 'Hora da venda': '', 'Vendedor Trier': '', 'Operador PaggPix': row.fonte === 'PaggPix' ? staffNameForRow(row, 'PaggPix', staff) : '', 'Forma de pagamento': '', 'Canal Trier': '', 'Canal do recebimento': row.tipo || row.bandeira || '', 'Conferência de canal': '', 'Valor da venda': '', 'Valor recebido': row.valor, Origem: row.fonte, 'Hora do recebimento': row.hora || '', 'Diferença de valor': '', Status: STATUS_LABEL[row.status], 'Motivo da conciliação': row.motivo || '', 'Ação manual': row.manualUnmatch ? 'Desconciliado manualmente' : '', ...markerExportFields(markers[row.__markerKey], staff),
     })),
     ...closingReceipts.map((row) => ({
       'Número da venda': '', Data: row.data, 'Hora da venda': '', 'Vendedor Trier': '', 'Operador PaggPix': '', 'Forma de pagamento': '', 'Canal Trier': '', 'Canal do recebimento': row.tipo || row.bandeira || '', 'Conferência de canal': '', 'Valor da venda': '', 'Valor recebido': row.valor, Origem: 'Cielo / Fechamento de Caixa', 'Hora do recebimento': row.hora || '', 'Diferença de valor': '', Status: STATUS_LABEL[row.status], ...markerExportFields(null, staff, false),
@@ -938,6 +977,7 @@ export default function App() {
   const [tab, setTab] = useState(loadResultTab)
   const [error, setError] = useState('')
   const [analystMarkers, setAnalystMarkers] = useState(loadAnalystMarkers)
+  const [manualUnmatches, setManualUnmatches] = useState({})
   const [staff, setStaff] = useState(loadStaffDirectory)
   const [discountMode, setDiscountMode] = useState('percent')
   const [discountPercentThreshold, setDiscountPercentThreshold] = useState(30)
@@ -966,14 +1006,16 @@ export default function App() {
       const restoredFiles = Object.fromEntries(Object.keys(EMPTY_FILES).map((key) => [key, saved.files[key] || null]))
       const restoredValueTolerance = saved.toleranceValue ?? 0.5
       const restoredHourTolerance = saved.toleranceHours ?? 2
+      const restoredManualUnmatches = saved.manualUnmatches && typeof saved.manualUnmatches === 'object' ? saved.manualUnmatches : {}
       setFiles(restoredFiles)
       setToleranceValue(restoredValueTolerance)
       setToleranceHours(restoredHourTolerance)
+      setManualUnmatches(restoredManualUnmatches)
       setHistorySavedAt(saved.savedAt || '')
       setHistoryMessage('Última sessão restaurada. Você pode trocar qualquer relatório quando quiser.')
       if (restoredFiles.trier && (restoredFiles.pagpix || restoredFiles.cielo)) {
         try {
-          setOutput(reconcile(restoredFiles, Number(restoredValueTolerance) || 0, Number(restoredHourTolerance) || 0))
+          setOutput(reconcile(restoredFiles, Number(restoredValueTolerance) || 0, Number(restoredHourTolerance) || 0, restoredManualUnmatches))
         } catch {
           setHistoryMessage('Os relatórios foram restaurados. Execute a conciliação para atualizar o resultado.')
         }
@@ -985,7 +1027,7 @@ export default function App() {
   useEffect(() => {
     if (!historyReady || !Object.values(files).some(Boolean)) return undefined
     const timer = window.setTimeout(() => {
-      saveReconciliationSession({ files, toleranceValue, toleranceHours })
+      saveReconciliationSession({ files, toleranceValue, toleranceHours, manualUnmatches })
         .then(() => {
           setHistorySavedAt(new Date().toISOString())
           setHistoryMessage('Histórico atualizado automaticamente neste navegador.')
@@ -993,7 +1035,7 @@ export default function App() {
         .catch(() => setHistoryMessage('Não foi possível salvar o histórico neste navegador. Verifique se o armazenamento local está permitido.'))
     }, 300)
     return () => window.clearTimeout(timer)
-  }, [files, toleranceValue, toleranceHours, historyReady])
+  }, [files, toleranceValue, toleranceHours, manualUnmatches, historyReady])
 
   function saveStaffMember(person) {
     setStaff((current) => current.some((item) => item.id === person.id) ? current.map((item) => item.id === person.id ? { ...item, ...person } : item) : [...current, person])
@@ -1009,6 +1051,7 @@ export default function App() {
       await clearReconciliationSession()
       setFiles({ ...EMPTY_FILES })
       setOutput(null)
+      setManualUnmatches({})
       setDiscountAudit(null)
       setError('')
       setHistorySavedAt('')
@@ -1050,6 +1093,9 @@ export default function App() {
       const rows = spreadsheetRows ?? (key === 'trier' ? parseTrierLines(lines) : key === 'pagpix' ? parsePagPixLines(lines) : key === 'cielo' ? parseCieloLines(lines) : key === 'fechamento' ? parseFechamentoLines(lines) : [])
       setFiles((previous) => ({ ...previous, [key]: { fileName: file.name, lines, rows } }))
       setOutput(null)
+      // A manual decision belongs to the exact set of imported reports. When
+      // any source is replaced, start the review links from a clean state.
+      setManualUnmatches({})
       if (key === 'trier') setDiscountAudit(null)
       if (!lines.length) setError(`Não consegui extrair nenhum texto de “${file.name}”. Se for um PDF escaneado (imagem), será necessário OCR.`)
       else if (key !== 'fechamento' && !rows.length) setError(`Li ${lines.length} linhas de “${file.name}”, mas não reconheci registros no formato esperado. Abra “Ver linhas extraídas” para revisar o conteúdo.`)
@@ -1058,8 +1104,37 @@ export default function App() {
 
   function runReconciliation() {
     setError('')
-    try { setOutput(reconcile(files, Number(toleranceValue) || 0, Number(toleranceHours) || 0)) }
+    try { setOutput(reconcile(files, Number(toleranceValue) || 0, Number(toleranceHours) || 0, manualUnmatches)) }
     catch (exception) { setOutput(null); setError(exception.message) }
+  }
+
+  function recalculateWithManual(nextManualUnmatches, nextTab = tab) {
+    setManualUnmatches(nextManualUnmatches)
+    try {
+      setOutput(reconcile(files, Number(toleranceValue) || 0, Number(toleranceHours) || 0, nextManualUnmatches))
+      setTab(nextTab)
+      setHistoryMessage('A decisão manual foi salva neste navegador.')
+    } catch (exception) {
+      setError(exception.message || 'Não foi possível atualizar a conciliação.')
+    }
+  }
+
+  function handleUnconcile(row) {
+    if (!row?.sale || !row?.recebimento) return
+    const saleKey = reconciliationSaleKey(row.sale)
+    const receiptKey = reconciliationReceiptKey(row.recebimento)
+    if (!saleKey || !receiptKey) return
+    const saleLabel = row.sale.numero ? `venda ${row.sale.numero}` : 'esta venda'
+    if (!window.confirm(`Desconciliar ${saleLabel}? A venda voltará para “Sem recebimento” e o recebimento para “Sem venda”.`)) return
+    recalculateWithManual({ ...manualUnmatches, [saleKey]: { saleKey, receiptKey, createdAt: new Date().toISOString() } }, 'sem_recebimento')
+  }
+
+  function handleRestoreReconciliation(row) {
+    const saleKey = row?.manualUnmatchSaleKey || (row?.sale ? reconciliationSaleKey(row.sale) : '')
+    if (!saleKey || !manualUnmatches[saleKey]) return
+    const next = { ...manualUnmatches }
+    delete next[saleKey]
+    recalculateWithManual(next, 'resumo')
   }
 
   function runDiscountAudit() {
@@ -1122,7 +1197,7 @@ export default function App() {
     {output && <section className="results-section"><div className="results-heading"><span className="section-kicker">Etapa 3</span><h2>Resultado da conciliação</h2><p>Revise os indicadores e filtre cada coluna para investigar os registros.</p></div><div className="kpi-grid">{kpis.map(([label, value]) => <div className="kpi" key={label}><div>{label}</div><strong>{value}</strong></div>)}</div>
       <div className="no-print tabs"><div className="tab-list">{tabs.map(([key, label]) => <button key={key} className={tab === key ? 'tab active' : 'tab'} onClick={() => setTab(key)}>{label}</button>)}</div><div className="export-list"><button onClick={() => downloadCsv(output, analystMarkers, staff)}>⇩ CSV</button><button onClick={() => downloadExcel(output, analystMarkers, staff)}>⇩ Excel</button><button onClick={() => window.print()}>⇩ PDF</button></div></div>
       {tab === 'resumo' && <div className="summary-card">Das <b>{counts.total}</b> vendas eletrônicas da Relação de Vendas, <b className="text-green">{counts.reconciled}</b> foram conciliadas, <b className="text-amber">{counts.divergent}</b> tiveram divergência de valor dentro da tolerância e <b className="text-rust">{counts.missing}</b> não encontraram recebimento correspondente.{noSale.length > 0 && <><br /><br />Também foram encontrados <b className="text-rust">{noSale.length}</b> recebimentos sem venda correspondente, sendo <b>{counts.duplicates}</b> identificados como possível duplicidade.</>}{crediarioCartao.length > 0 && <><br /><br /><b className="text-green">{crediarioCartao.length}</b> recebimento(s) da Cielo, somando <b>{formatMoney(crediarioCartao.reduce((sum, row) => sum + row.valor, 0))}</b>, foram identificados como <b>Contas Recebidas Crediário (Cartão)</b> pelo Fechamento de Caixa.</>}{counts.returns > 0 && <><br /><br /><b>{counts.returns}</b> linha(s) de devolução não entraram na conciliação, pois não representam recebimento a buscar.</>}<br /><br />Use as abas para revisar cada grupo ou exporte a tabela final em Excel, CSV ou PDF.</div>}
-      {tab === 'conciliada' && <SalesTable key="conciliada" viewKey="conciliada" rows={results.filter((row) => row.status === 'CONCILIADA')} staff={staff} />}{tab === 'divergencia' && <SalesTable key="divergencia" viewKey="divergencia" rows={results.filter((row) => row.status === 'DIVERGENCIA')} staff={staff} />}{tab === 'sem_recebimento' && <SalesTable key="sem_recebimento" viewKey="sem_recebimento" rows={results.filter((row) => row.status === 'SEM_RECEBIMENTO')} markers={analystMarkers} onSaveMarker={saveAnalystMarker} onRemoveMarker={removeAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_recebimento" staff={staff} />}{tab === 'devolucao' && <SalesTable key="devolucao" viewKey="devolucao" rows={results.filter((row) => row.status === 'DEVOLUCAO')} staff={staff} />}{tab === 'sem_venda' && <NoSaleTable key="sem_venda" viewKey="sem_venda" rows={noSale} markers={analystMarkers} onSaveMarker={saveAnalystMarker} onRemoveMarker={removeAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_venda" staff={staff} />}{tab === 'crediario_cartao' && <><ClosingCreditSummary groups={fechamentoCrediario} /><NoSaleTable key="crediario_cartao" viewKey="crediario_cartao" rows={crediarioCartao} staff={staff} /></>}
+      {tab === 'conciliada' && <SalesTable key="conciliada" viewKey="conciliada" rows={results.filter((row) => row.status === 'CONCILIADA')} staff={staff} onUnconcile={handleUnconcile} />}{tab === 'divergencia' && <SalesTable key="divergencia" viewKey="divergencia" rows={results.filter((row) => row.status === 'DIVERGENCIA')} staff={staff} onUnconcile={handleUnconcile} />}{tab === 'sem_recebimento' && <SalesTable key="sem_recebimento" viewKey="sem_recebimento" rows={results.filter((row) => row.status === 'SEM_RECEBIMENTO')} markers={analystMarkers} onSaveMarker={saveAnalystMarker} onRemoveMarker={removeAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_recebimento" staff={staff} onRestore={handleRestoreReconciliation} />}{tab === 'devolucao' && <SalesTable key="devolucao" viewKey="devolucao" rows={results.filter((row) => row.status === 'DEVOLUCAO')} staff={staff} />}{tab === 'sem_venda' && <NoSaleTable key="sem_venda" viewKey="sem_venda" rows={noSale} markers={analystMarkers} onSaveMarker={saveAnalystMarker} onRemoveMarker={removeAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_venda" staff={staff} onRestore={handleRestoreReconciliation} />}{tab === 'crediario_cartao' && <><ClosingCreditSummary groups={fechamentoCrediario} /><NoSaleTable key="crediario_cartao" viewKey="crediario_cartao" rows={crediarioCartao} staff={staff} /></>}
     </section>}
     <footer className="app-footer"><img src={assetPath('drogaria-center-logo.png')} alt="Drogaria Center" /><span>Conciliação segura, simples e local.</span></footer>
   </div></main>

@@ -605,6 +605,10 @@
 .analyst-marker span { font-size: 13px; line-height: 1; }
 .analyst-marker > span:last-child { display: flex; max-width: 180px; flex-direction: column; align-items: flex-start; gap: 2px; overflow: hidden; font-size: 9.5px; }
 .analyst-marker small { display: block; max-width: 100%; overflow: hidden; color: #71804e; font-size: 7.5px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.reconciliation-action { min-height: 32px; border: 1px solid #efc3ca; border-radius: 9px; background: #fff7f8; padding: 6px 9px; color: var(--brand-red-dark); font-size: 9px; font-weight: 850; white-space: nowrap; }
+.reconciliation-action:hover { border-color: var(--brand-red); background: #fff0f2; }
+.reconciliation-action.restore { border-color: #cfe49c; background: #f4ffdf; color: #527700; }
+.reconciliation-action.restore:hover { border-color: #8dbb28; background: #effbd7; }
 .review-modal-backdrop { display: grid; position: fixed; z-index: 100; inset: 0; place-items: end center; background: rgba(31, 13, 18, .52); padding: 12px; backdrop-filter: blur(4px); }
 .review-modal { width: min(100%, 650px); max-height: calc(100vh - 24px); overflow: auto; border-radius: 21px; background: white; padding: 17px; box-shadow: 0 28px 80px rgba(35, 6, 12, .3); }
 .review-modal-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
@@ -632,9 +636,12 @@
 .status-SEM_RECEBIMENTO, .status-RECEBIMENTO_SEM_VENDA { background: #ffe9ec; color: #b00015; }
 .status-DUPLICADO { background: #f2e9f8; color: #744195; }
 .status-DEVOLUCAO { background: #f1edef; color: #75666a; }
-.channel-check { display: inline-flex; min-width: 130px; flex-direction: column; gap: 2px; border-radius: 10px; padding: 6px 8px; line-height: 1.2; }
+.channel-check { display: inline-flex; min-width: 210px; flex-direction: column; gap: 3px; border-radius: 10px; padding: 7px 9px; line-height: 1.25; }
 .channel-check b { font-size: 9px; white-space: nowrap; }
 .channel-check small { font-size: 8px; font-weight: 700; white-space: nowrap; }
+.channel-check em { font-size: 8px; font-style: normal; font-weight: 850; white-space: nowrap; }
+.channel-check .time-difference { color: #946000; }
+.channel-check .time-difference.exact { color: #527e00; }
 .channel-check.compatible { background: #effbd9; color: #527e00; }
 .channel-check.divergent { border: 1px solid #f0d18c; background: #fff4d6; color: #946000; }
 .closing-credit-groups { display: grid; gap: 10px; margin-bottom: 14px; }

@@ -115,6 +115,19 @@ function timeToMinutes(hhmm = '00:00') {
   return hours * 60 + minutes
 }
 
+// Stable identifiers used by the manual review action. They intentionally
+// include the source row details instead of only the sale number because the
+// same number can appear in a different report/date after a new import.
+export function reconciliationSaleKey(sale) {
+  if (!sale) return ''
+  return ['sale', sale.numero, sale.data, sale.hora, sale.forma, Number(sale.valor ?? 0).toFixed(2), sale.raw ?? ''].join('|')
+}
+
+export function reconciliationReceiptKey(receipt) {
+  if (!receipt) return ''
+  return ['receipt', receipt.fonte ?? '', receipt.data, receipt.hora, Number(receipt.valor ?? 0).toFixed(2), receipt.tipo ?? '', receipt.bandeira ?? '', receipt.raw ?? ''].join('|')
+}
+
 function parseDataHora(dataStr, horaStr) {
   if (!dataStr) return null
   let [day, month, year] = dataStr.split('/').map(Number)
@@ -464,7 +477,7 @@ function findClosingReceiptSubset(receipts, target, toleranceValue) {
   return best?.items ?? []
 }
 
-export function reconcile(files, toleranceValue, toleranceHours) {
+export function reconcile(files, toleranceValue, toleranceHours, manualUnmatches = {}) {
   const trier = files.trier.rows
     .filter((row) => row.valor !== null && row.data)
     .map((row) => ({ ...row, dt: parseDataHora(row.data, row.hora), min: timeToMinutes(row.hora) }))
@@ -481,6 +494,11 @@ export function reconcile(files, toleranceValue, toleranceHours) {
   const results = []
   const pending = []
 
+  const manualPairs = Object.values(manualUnmatches ?? {}).filter((pair) => pair?.saleKey)
+  const manualBySale = new Map(manualPairs.map((pair) => [pair.saleKey, pair]))
+  const manualByReceipt = new Map(manualPairs.filter((pair) => pair?.receiptKey).map((pair) => [pair.receiptKey, pair]))
+  const blockedReceipts = new Set(manualByReceipt.keys())
+
   trier.forEach((sale) => {
     if (sale.isDev) results.push({ sale, status: 'DEVOLUCAO', fonte: null, motivo: 'Linha de devolução — não é recebimento a conciliar' })
     else if (['DINHEIRO', 'CREDIARIO', 'CHEQUE'].includes(sale.forma)) results.push({ sale, status: 'CONCILIADA', fonte: null, motivo: 'Meio de pagamento não eletrônico' })
@@ -491,7 +509,7 @@ export function reconcile(files, toleranceValue, toleranceHours) {
   const getPool = (sale) => {
     if (sale.forma === 'PIX') {
       const expectedType = sale.tele === 'Sim' ? 'Delivery' : 'Balcao'
-      const available = pagpixPool.filter((item) => !item.used && sameDay(item.dt, sale.dt))
+      const available = pagpixPool.filter((item) => !item.used && !blockedReceipts.has(reconciliationReceiptKey(item)) && sameDay(item.dt, sale.dt))
       const sameChannel = available.filter((item) => item.tipo === expectedType)
       // Algumas vendas são marcadas como Tele/Delivery na Trier, mas o QR Code
       // fica registrado como Balcão no PaggPix (ou o inverso). Nesse caso,
@@ -501,7 +519,7 @@ export function reconcile(files, toleranceValue, toleranceHours) {
         : []
       return { pool: [...sameChannel, ...sameSellerOtherChannel], fonte: 'PaggPix', expectedType }
     }
-    if (sale.forma === 'CARTAO') return { pool: cieloPool.filter((item) => !item.used && !item.reservedClosing && sameDay(item.dt, sale.dt)), fonte: 'Cielo' }
+    if (sale.forma === 'CARTAO') return { pool: cieloPool.filter((item) => !item.used && !item.reservedClosing && !blockedReceipts.has(reconciliationReceiptKey(item)) && sameDay(item.dt, sale.dt)), fonte: 'Cielo' }
     return { pool: [], fonte: null }
   }
 
@@ -612,12 +630,25 @@ export function reconcile(files, toleranceValue, toleranceHours) {
   }
 
   const resolvePending = (resolved) => {
-    const timedMatches = assignGlobally(pending.filter((sale) => !resolved.has(sale.numero)), true)
+    const eligiblePending = pending.filter((sale) => !resolved.has(sale.numero) && !manualBySale.has(reconciliationSaleKey(sale)))
+    const timedMatches = assignGlobally(eligiblePending, true)
     timedMatches.forEach(({ sale, receipt, fonte, expectedType }) => resolved.set(sale.numero, buildMatchedResult(sale, receipt, fonte, expectedType)))
-    const fallbackMatches = assignGlobally(pending.filter((sale) => !resolved.has(sale.numero)), false)
+    const fallbackMatches = assignGlobally(eligiblePending.filter((sale) => !resolved.has(sale.numero)), false)
     fallbackMatches.forEach(({ sale, receipt, fonte, expectedType }) => resolved.set(sale.numero, buildMatchedResult(sale, receipt, fonte, expectedType)))
     pending.forEach((sale) => {
-      if (!resolved.has(sale.numero)) resolved.set(sale.numero, { sale, status: 'SEM_RECEBIMENTO', fonte: getPool(sale).fonte, motivo: 'Nenhum recebimento correspondente encontrado' })
+      if (resolved.has(sale.numero)) return
+      const manualPair = manualBySale.get(reconciliationSaleKey(sale))
+      if (manualPair) {
+        resolved.set(sale.numero, {
+          sale,
+          status: 'SEM_RECEBIMENTO',
+          fonte: getPool(sale).fonte,
+          motivo: 'Desconciliado manualmente pelo analista',
+          manualUnmatch: true,
+          manualUnmatchSaleKey: manualPair.saleKey,
+          manualUnmatchReceiptKey: manualPair.receiptKey || '',
+        })
+      } else resolved.set(sale.numero, { sale, status: 'SEM_RECEBIMENTO', fonte: getPool(sale).fonte, motivo: 'Nenhum recebimento correspondente encontrado' })
     })
   }
 
@@ -626,7 +657,7 @@ export function reconcile(files, toleranceValue, toleranceHours) {
 
   let requiresRematch = false
   const closingGroups = fechamentoCrediario.map((closing, index) => {
-    const candidates = cieloPool.filter((item) => !item.reservedClosing && sameDay(item.dt, closing.dt))
+    const candidates = cieloPool.filter((item) => !item.reservedClosing && !blockedReceipts.has(reconciliationReceiptKey(item)) && sameDay(item.dt, closing.dt))
     const receipts = findClosingReceiptSubset(candidates, closing.valor, toleranceValue)
     if (receipts.some((receipt) => receipt.used)) requiresRematch = true
     receipts.forEach((receipt) => { receipt.reservedClosing = true; receipt.closingGroup = index })
@@ -654,7 +685,19 @@ export function reconcile(files, toleranceValue, toleranceHours) {
     fechamentoValor: group.valor,
     fechamentoData: group.data,
   })))
-  const semVenda = [...pagpixPool, ...cieloPool].filter((item) => !item.used && !item.reservedClosing).map((item) => ({ ...item, status: 'RECEBIMENTO_SEM_VENDA' }))
+  const semVenda = [...pagpixPool, ...cieloPool].filter((item) => !item.used && !item.reservedClosing).map((item) => {
+    const manualPair = manualByReceipt.get(reconciliationReceiptKey(item))
+    return {
+      ...item,
+      status: 'RECEBIMENTO_SEM_VENDA',
+      ...(manualPair ? {
+        manualUnmatch: true,
+        manualUnmatchSaleKey: manualPair.saleKey,
+        manualUnmatchReceiptKey: manualPair.receiptKey,
+        motivo: 'Desconciliado manualmente pelo analista',
+      } : {}),
+    }
+  })
   semVenda.forEach((item, index) => {
     semVenda.slice(index + 1).forEach((other) => {
       if (other.status !== 'DUPLICADO' && item.fonte === other.fonte && Math.abs(item.valor - other.valor) < 0.005 && Math.abs(item.dt - other.dt) <= 60000) {

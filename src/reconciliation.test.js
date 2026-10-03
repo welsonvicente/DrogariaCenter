@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { findHighDiscountSales, parseCieloLines, parseFechamentoLines, parseTrierLines, reconcile, resolveOperator } from './reconciliation.js'
+import { findHighDiscountSales, parseCieloLines, parseFechamentoLines, parseTrierLines, reconcile, reconciliationReceiptKey, reconciliationSaleKey, resolveOperator } from './reconciliation.js'
 
 const sampleLines = [
   '268648 1 CARTAO 30/07/26 07:20 65 83509 8 49,99 10,00 -5,00 44,99 44,99',
@@ -130,6 +130,23 @@ test('prioriza globalmente o recebimento exato mesmo com tolerância ampla', () 
   assert.equal(bySale.get('286586').status, 'CONCILIADA')
   assert.equal(bySale.get('286586').recebimento.hora, '21:24')
   assert.equal(bySale.get('286500').status, 'SEM_RECEBIMENTO')
+})
+
+test('desconciliação manual devolve a venda e o recebimento para as pendências', () => {
+  const trier = parseTrierLines(['286900 1 CARTAO 02/10/26 10:00 65 95974 1 50,00 0,00 0,00 50,00 50,00'])
+  const cielo = [{ data: '02/10/2026', hora: '09:58:00', status: 'APROVADA', bandeira: 'VISA', valor: 50, raw: '02/10/2026 09:58:00 APROVADA VISA 50,00' }]
+  const saleKey = reconciliationSaleKey(trier[0])
+  const receipt = cielo[0]
+  const receiptKey = reconciliationReceiptKey({ ...receipt, fonte: 'Cielo' })
+  const files = { trier: { rows: trier }, pagpix: { rows: [] }, cielo: { rows: cielo }, fechamento: { rows: [] } }
+  const output = reconcile(files, 0.5, 2, { [saleKey]: { saleKey, receiptKey } })
+  const result = output.results.find((row) => row.sale.numero === '286900')
+  assert.equal(result.status, 'SEM_RECEBIMENTO')
+  assert.equal(result.manualUnmatch, true)
+  assert.equal(result.motivo, 'Desconciliado manualmente pelo analista')
+  assert.equal(output.semVenda.length, 1)
+  assert.equal(output.semVenda[0].manualUnmatch, true)
+  assert.equal(output.semVenda[0].manualUnmatchSaleKey, saleKey)
 })
 
 test('extrai contas recebidas crediário no cartão do fechamento', () => {
