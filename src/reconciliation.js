@@ -188,7 +188,7 @@ export function parseTrierLines(lines) {
       forma: head[2],
       operador: findTrierOperator(chunk, monies[0]),
       operadorOriginal: findTrierOperator(chunk, monies[0]),
-      tele: /\bSim\b/.test(chunk) ? 'Sim' : '',
+      tele: /\bSIM\b/i.test(chunk) ? 'Sim' : '',
       isDev: /\bDev\b/i.test(chunk),
       data: date[1],
       hora: time[1],
@@ -268,7 +268,7 @@ export async function parseTrierSpreadsheet(file) {
         const valor = parseLooseNumber(sourceRow[columns.total])
         if (!/^\d{4,8}$/.test(numero) || !['PIX', 'CARTAO'].includes(forma) || !DATE_RE.test(data) || !TIME_RE.test(hora) || valor === null) continue
         const type = String(sourceRow[columns.type] ?? '')
-        const tele = String(sourceRow[columns.delivery] ?? '')
+        const tele = String(sourceRow[columns.delivery] ?? '').trim()
         const operator = String(sourceRow[columns.operator] ?? '')
         const valorBruto = parseLooseNumber(sourceRow[columns.gross])
         const descontoPercentual = parseLooseNumber(sourceRow[columns.discountPercent])

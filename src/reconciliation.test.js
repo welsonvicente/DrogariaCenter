@@ -20,6 +20,17 @@ test('extrai valor bruto, percentual e valor do desconto da Trier', () => {
   assert.equal(sale.operador, '8')
 })
 
+test('identifica Delivery pela coluna Tele entrega em PIX e cartão', () => {
+  const sales = parseTrierLines([
+    '286511 1 CARTAO Sim 02/10/26 17:48 65 95910 DELIVERY 15 154,99 0,00 0,00 154,99 154,99',
+    '286512 1 PIX SIM 02/10/26 17:49 65 95911 DELIVERY 15 20,00 0,00 0,00 20,00 20,00',
+    '286513 1 CARTAO 02/10/26 17:50 65 95912 15 30,00 0,00 0,00 30,00 30,00',
+  ])
+  assert.equal(sales.find((sale) => sale.numero === '286511').tele, 'Sim')
+  assert.equal(sales.find((sale) => sale.numero === '286512').tele, 'Sim')
+  assert.equal(sales.find((sale) => sale.numero === '286513').tele, '')
+})
+
 test('filtra desconto alto por percentual ou valor e ignora devoluções', () => {
   const sales = parseTrierLines(sampleLines)
   const byPercent = findHighDiscountSales(sales, 'percent', 30)
