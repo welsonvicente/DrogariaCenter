@@ -102,6 +102,31 @@ test('concilia a venda 286586 com a Cielo de R$ 171,90 um minuto antes', () => {
   assert.equal(output.semVenda.length, 0)
 })
 
+test('identifica PIX dentro do relatório Cielo e concilia com venda PIX da Trier', () => {
+  const cielo = parseCieloLines([
+    '03/10/2026 16:58 2891818657 45.595.257/0001-71 Pix Pix R$ 22,00 -R$ 0,03 R$ 21,97 Aprovada',
+  ])
+  assert.equal(cielo[0].forma, 'PIX')
+  assert.equal(cielo[0].tipo, 'PIX')
+  assert.equal(cielo[0].bandeira, 'PIX')
+
+  const trier = parseTrierLines(['286850 1 PIX 03/10/26 16:59 65 96209 13 22,00 0,00 0,00 22,00 22,00'])
+  const output = reconcile({ trier: { rows: trier }, cielo: { rows: cielo }, pagpix: { rows: [] }, fechamento: { rows: [] } }, 0.5, 2)
+  const result = output.results.find((row) => row.sale.numero === '286850')
+  assert.equal(result.status, 'CONCILIADA')
+  assert.equal(result.fonte, 'Cielo')
+  assert.equal(result.recebimento.forma, 'PIX')
+  assert.equal(output.semVenda.length, 0)
+})
+
+test('não usa PIX da Cielo para uma venda marcada como cartão', () => {
+  const trier = parseTrierLines(['286851 1 CARTAO 03/10/26 16:59 65 96210 13 22,00 0,00 0,00 22,00 22,00'])
+  const cielo = parseCieloLines(['03/10/2026 16:58 2891818657 45.595.257/0001-71 Pix Pix R$ 22,00 -R$ 0,03 R$ 21,97 Aprovada'])
+  const output = reconcile({ trier: { rows: trier }, cielo: { rows: cielo }, pagpix: { rows: [] }, fechamento: { rows: [] } }, 0.5, 2)
+  assert.equal(output.results[0].status, 'SEM_RECEBIMENTO')
+  assert.equal(output.semVenda.length, 1)
+})
+
 test('usa separadamente os dois pagamentos Cielo de R$ 10,00 e mantém os R$ 171,90', () => {
   const trier = parseTrierLines([
     '286311 1 CARTAO Sim 02/10/26 08:00 65 95730 DELIVERY 4 11,99 16,60 -1,99 10,00 10,00',
@@ -194,6 +219,78 @@ test('conciliação manual soma crédito e débito na mesma venda', () => {
   assert.equal(result.diff, 0)
   assert.equal(result.fonte, 'Cielo')
   assert.equal(output.semVenda.length, 0)
+})
+
+test('sugere dois recebimentos próximos como pagamento dividido sem conciliar automaticamente', () => {
+  const trier = parseTrierLines(['286326 1 CARTAO 02/10/26 08:34 65 95745 8 15,00 0,00 0,00 15,00 15,00'])
+  const cielo = parseCieloLines([
+    '02/10/2026 08:32 Crédito à vista Visa R$ 10,00 Aprovada',
+    '02/10/2026 08:33 Débito à vista Mastercard R$ 5,00 Aprovada',
+  ])
+  const output = reconcile({ trier: { rows: trier }, pagpix: { rows: [] }, cielo: { rows: cielo }, fechamento: { rows: [] } }, 0.5, 3)
+  const result = output.results.find((row) => row.sale.numero === '286326')
+
+  assert.equal(result.status, 'SEM_RECEBIMENTO')
+  assert.equal(result.splitPaymentSuggestion.receipts.length, 2)
+  assert.equal(result.splitPaymentSuggestion.total, 15)
+  assert.equal(result.splitPaymentSuggestion.diff, 0)
+  assert.equal(result.splitPaymentSuggestion.maxTimeDifferenceMinutes, 2)
+  assert.equal(output.semVenda.length, 2)
+})
+
+test('não sugere pagamento dividido quando os recebimentos estão distantes da venda', () => {
+  const trier = parseTrierLines(['286327 1 CARTAO 02/10/26 10:00 65 95746 8 15,00 0,00 0,00 15,00 15,00'])
+  const cielo = parseCieloLines([
+    '02/10/2026 08:30 Crédito à vista Visa R$ 10,00 Aprovada',
+    '02/10/2026 08:31 Débito à vista Mastercard R$ 5,00 Aprovada',
+  ])
+  const output = reconcile({ trier: { rows: trier }, pagpix: { rows: [] }, cielo: { rows: cielo }, fechamento: { rows: [] } }, 0.5, 3)
+  assert.equal(output.results[0].status, 'SEM_RECEBIMENTO')
+  assert.equal(output.results[0].splitPaymentSuggestion, undefined)
+})
+
+test('conciliação manual junta as vendas 286626 e 286633 em um recebimento maior', () => {
+  const trier = parseTrierLines([
+    '286626 1 CARTAO 03/10/26 09:16 65 96015 3 171,93 12,76 -21,93 150,00 150,00',
+    '286633 1 CARTAO 03/10/26 09:33 65 96023 3 221,73 10,48 -23,24 198,49 198,49',
+  ])
+  const cielo = parseCieloLines(['03/10/2026 09:30 Crédito parcelado loja 05 Visa R$ 350,00 -R$ 29,10 R$ 320,90 Aprovada'])
+  const saleKeys = trier.map(reconciliationSaleKey)
+  const receiptKey = reconciliationReceiptKey({ ...cielo[0], fonte: 'Cielo' })
+  const manualMatches = { group: { groupId: 'group', saleKey: saleKeys[0], saleKeys, receiptKey, receiptKeys: [receiptKey] } }
+  const output = reconcile({ trier: { rows: trier }, cielo: { rows: cielo }, pagpix: { rows: [] }, fechamento: { rows: [] } }, 0.5, 2, {}, manualMatches)
+  const bySale = new Map(output.results.map((row) => [row.sale.numero, row]))
+
+  assert.equal(bySale.get('286626').manualMatch, true)
+  assert.equal(bySale.get('286633').manualMatch, true)
+  assert.equal(bySale.get('286626').manualMatchGroupId, 'group')
+  assert.equal(bySale.get('286626').groupSalesValue, 348.49)
+  assert.equal(bySale.get('286626').groupReceivedValue, 350)
+  assert.equal(bySale.get('286626').diff, -1.51)
+  assert.equal(bySale.get('286633').diff, -1.51)
+  assert.equal(bySale.get('286626').status, 'DIVERGENCIA')
+  assert.equal(output.semVenda.length, 0)
+})
+
+test('janela configurável sugere duas vendas para um recebimento sem conciliar automaticamente', () => {
+  const trier = parseTrierLines([
+    '286626 1 CARTAO 03/10/26 09:16 65 96015 3 171,93 12,76 -21,93 150,00 150,00',
+    '286633 1 CARTAO 03/10/26 09:33 65 96023 3 221,73 10,48 -23,24 198,49 198,49',
+  ])
+  const cielo = parseCieloLines(['03/10/2026 09:30 Crédito parcelado loja 05 Visa R$ 350,00 -R$ 29,10 R$ 320,90 Aprovada'])
+  const files = { trier: { rows: trier }, cielo: { rows: cielo }, pagpix: { rows: [] }, fechamento: { rows: [] } }
+  const within15Minutes = reconcile(files, 0.5, 2, {}, {}, {}, 15)
+  const within17Minutes = reconcile(files, 0.5, 2, {}, {}, {}, 17)
+  const receipt = within17Minutes.semVenda[0]
+
+  assert.equal(within15Minutes.semVenda[0].splitSalesSuggestion, undefined)
+  assert.deepEqual(receipt.splitSalesSuggestion.sales.map((sale) => sale.numero), ['286626', '286633'])
+  assert.equal(receipt.splitSalesSuggestion.total, 348.49)
+  assert.equal(receipt.splitSalesSuggestion.diff, -1.51)
+  assert.equal(receipt.splitSalesSuggestion.salesDistanceMinutes, 17)
+  assert.equal(receipt.splitSalesSuggestion.windowMinutes, 17)
+  assert.deepEqual(within17Minutes.results.map((row) => row.status), ['SEM_RECEBIMENTO', 'SEM_RECEBIMENTO'])
+  assert.equal(within17Minutes.semVenda.length, 1)
 })
 
 test('conciliação manual aceita forma de pagamento informada pelo analista', () => {
