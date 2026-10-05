@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { findHighDiscountSales, parseCieloLines, parseFechamentoLines, parseTrierLines, reconcile, reconciliationReceiptKey, reconciliationSaleKey, resolveOperator } from './reconciliation.js'
+import { findHighDiscountSales, parseCieloLines, parseFechamentoLines, parseTrierLines, receiptsForManualReview, reconcile, reconciliationReceiptKey, reconciliationSaleKey, resolveOperator } from './reconciliation.js'
 
 const sampleLines = [
   '268648 1 CARTAO 30/07/26 07:20 65 83509 8 49,99 10,00 -5,00 44,99 44,99',
@@ -218,6 +218,41 @@ test('conciliação manual soma crédito e débito na mesma venda', () => {
   assert.equal(result.recebimento.valor, 15)
   assert.equal(result.diff, 0)
   assert.equal(result.fonte, 'Cielo')
+  assert.equal(output.semVenda.length, 0)
+})
+
+test('investigação manual mostra PaggPix para venda registrada como cartão, independentemente do valor', () => {
+  const sale = parseTrierLines(['287020 1 CARTAO 04/10/26 11:16 65 96357 19 150,45 9,60 -14,45 136,00 136,00'])[0]
+  const pagpix = [
+    { data: '04/10/2026', hora: '11:15:39', tipo: 'balcao', operadorOriginal: 'SHAKIRA KESSIA SANTANA DESOUZA', status: 'PAGO', valor: 76, raw: '04/10/2026, 11:15:39 balcao SHAKIRA KESSIA SANTANA DESOUZA PAGO 76' },
+    { data: '03/10/2026', hora: '11:15:39', tipo: 'balcao', status: 'PAGO', valor: 99, raw: 'outro dia' },
+  ]
+  const cielo = parseCieloLines(['04/10/2026 11:13 Crédito à vista Mastercard R$ 35,00 Aprovada'])
+  const candidates = receiptsForManualReview({ pagpix: { rows: pagpix }, cielo: { rows: cielo } }, sale)
+  const pix = candidates.find((receipt) => receipt.fonte === 'PaggPix' && receipt.valor === 76)
+
+  assert.equal(sale.forma, 'CARTAO')
+  assert.equal(pix.forma, 'PIX')
+  assert.equal(pix.hora, '11:15:39')
+  assert.equal(candidates.some((receipt) => receipt.valor === 99), false)
+  assert.equal(candidates.some((receipt) => receipt.fonte === 'Cielo' && receipt.valor === 35), true)
+})
+
+test('conciliação manual combina PaggPix e dinheiro em venda lançada como cartão', () => {
+  const trier = parseTrierLines(['287020 1 CARTAO 04/10/26 11:16 65 96357 19 150,45 9,60 -14,45 136,00 136,00'])
+  const pagpix = { data: '04/10/2026', hora: '11:15:39', tipo: 'balcao', operadorOriginal: 'SHAKIRA KESSIA SANTANA DESOUZA', status: 'PAGO', valor: 76, raw: 'pix 76' }
+  const saleKey = reconciliationSaleKey(trier[0])
+  const pixReceipt = { ...pagpix, fonte: 'PaggPix' }
+  const manualReceipt = { saleKey, fonte: 'Manual', status: 'MANUAL', tipo: 'Dinheiro', data: '04/10/2026', hora: '11:16', valor: 60, raw: 'Pagamento informado manualmente dinheiro 60' }
+  const receiptKeys = [reconciliationReceiptKey(pixReceipt), reconciliationReceiptKey(manualReceipt)]
+  const files = { trier: { rows: trier }, pagpix: { rows: [pagpix] }, cielo: { rows: [] }, fechamento: { rows: [] } }
+  const output = reconcile(files, 0.5, 2, {}, { group: { groupId: 'group', saleKey, saleKeys: [saleKey], receiptKey: receiptKeys[0], receiptKeys } }, { [receiptKeys[1]]: manualReceipt })
+  const result = output.results[0]
+
+  assert.equal(result.status, 'CONCILIADA')
+  assert.equal(result.recebimentos.length, 2)
+  assert.equal(result.recebimento.valor, 136)
+  assert.equal(result.diff, 0)
   assert.equal(output.semVenda.length, 0)
 })
 

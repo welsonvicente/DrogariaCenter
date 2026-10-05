@@ -760,6 +760,10 @@
 .candidate-heading span { color: var(--brand-red); font-size: 8px; font-weight: 900; text-transform: uppercase; }
 .candidate-heading b { font-size: 12px; }
 .candidate-heading > small { color: var(--muted); font-size: 7.5px; }
+.candidate-search { display: grid; gap: 4px; margin-bottom: 8px; }
+.candidate-search > span { color: #765f64; font-size: 7.5px; font-weight: 850; text-transform: uppercase; }
+.candidate-search input { width: 100%; min-height: 38px; border: 1px solid #e6d5d8; border-radius: 10px; background: #fffafb; padding: 8px 10px; color: var(--ink); font-size: 9px; outline: none; }
+.candidate-search input:focus { border-color: var(--brand-red); box-shadow: 0 0 0 3px rgba(236, 0, 22, .08); }
 .split-payment-suggestion { display: grid; gap: 3px; margin-bottom: 8px; border: 1px solid #edca73; border-radius: 11px; background: #fff8df; padding: 9px 10px; color: #765100; }
 .split-payment-suggestion b { font-size: 9px; }
 .split-payment-suggestion span { font-size: 8px; line-height: 1.45; }
@@ -772,6 +776,7 @@
 .candidate-list article > div:first-child { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
 .candidate-list article b { overflow: hidden; color: #4b373c; font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
 .candidate-list article small, .candidate-list article span { color: #8a757a; font-size: 7.5px; }
+.candidate-list article .candidate-form-warning { margin-top: 2px; color: #a05b00; font-weight: 800; }
 .candidate-list article .candidate-reassign-warning { margin-top: 2px; color: #a56c00; font-weight: 800; }
 .candidate-price { display: flex; min-width: 95px; flex-direction: column; align-items: flex-end; gap: 2px; }
 .candidate-price strong { color: var(--brand-red-dark); font-size: 13px; }

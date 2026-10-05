@@ -440,6 +440,32 @@ export function parseFechamentoLines(lines) {
   })
 }
 
+function manualReviewDateKey(value) {
+  const [day = '', month = '', rawYear = ''] = String(value ?? '').trim().split('/')
+  if (!day || !month || !rawYear) return ''
+  const year = rawYear.length === 2 ? `20${rawYear}` : rawYear
+  return `${year.padStart(4, '0')}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`
+}
+
+function cieloReceiptIsPix(receipt) {
+  return receipt?.forma === 'PIX' || receipt?.tipo === 'PIX' || /\bPIX\b/i.test(receipt?.raw || '')
+}
+
+// A revisão manual precisa enxergar todas as fontes da mesma data, mesmo se a
+// forma informada na Trier estiver errada. Essa função não participa do
+// pareamento automático; ela apenas prepara as opções que o analista poderá
+// escolher conscientemente na investigação.
+export function receiptsForManualReview(files, sale) {
+  if (!sale) return []
+  const saleDate = manualReviewDateKey(sale.data)
+  return [
+    ...(files.pagpix?.rows ?? []).map((item) => ({ ...item, fonte: 'PaggPix', forma: 'PIX' })),
+    ...(files.cielo?.rows ?? []).map((item) => cieloReceiptIsPix(item)
+      ? { ...item, fonte: 'Cielo', forma: 'PIX', tipo: item.tipo || 'PIX', bandeira: item.bandeira || 'PIX' }
+      : { ...item, fonte: 'Cielo', forma: 'CARTAO' }),
+  ].filter((item) => ['PAGO', 'APROVADA'].includes(item.status) && manualReviewDateKey(item.data) === saleDate)
+}
+
 function sameDay(a, b) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
 }
