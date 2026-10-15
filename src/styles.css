@@ -624,8 +624,16 @@
 .review-modal-actions button { min-height: 40px; border: 1px solid #ead7db; border-radius: 10px; background: white; color: #705b60; font-size: 9.5px; font-weight: 850; }
 .review-modal-actions .review-reopen { grid-column: 1 / -1; color: var(--brand-red-dark); }
 .review-modal-actions .review-confirm { border-color: var(--brand-red); background: var(--brand-red); color: white; }
+.table-scroll tr.possible-return td { background: #fff9e7; }
+.table-scroll tr.possible-return td:first-child { box-shadow: inset 4px 0 0 #e9a900; }
 .table-scroll tr.manually-reconciled td { background: #fbfff4; }
 .table-scroll tr.manually-reconciled td:first-child { box-shadow: inset 4px 0 0 var(--brand-green); }
+.return-suggestion { display: inline-flex; min-width: 220px; max-width: 300px; flex-direction: column; align-items: flex-start; gap: 5px; border: 2px solid #8b3fc7; border-radius: 11px; background: #fbf3ff; padding: 8px 10px; color: #5c277f; text-align: left; box-shadow: 0 5px 14px rgba(111, 39, 159, .14); }
+.return-suggestion b { display: inline-flex; border-radius: 999px; background: #792caf; padding: 5px 8px; color: white; font-size: 9.5px; letter-spacing: .01em; }
+.return-suggestion span { font-size: 9px; font-weight: 850; }
+.return-suggestion small { color: #725681; font-size: 7.5px; font-weight: 650; line-height: 1.35; }
+button.return-suggestion { cursor: pointer; }
+button.return-suggestion:hover { border-color: #671b9c; background: #f5e4ff; box-shadow: 0 7px 18px rgba(111, 39, 159, .22); transform: translateY(-1px); }
 .filter-row th { padding: 6px 7px 9px; }
 .filter-row input { width: 100%; min-width: 112px; min-height: 34px; border: 1px solid #e8d6d9; border-radius: 8px; background: white; padding: 6px 8px; color: var(--ink); font-size: 10.5px; font-weight: 500; letter-spacing: 0; text-transform: none; }
 .filter-row input:focus { border-color: var(--brand-red); outline: 3px solid rgba(236, 0, 22, .1); outline-offset: 0; }
@@ -767,6 +775,7 @@
 .split-payment-suggestion { display: grid; gap: 3px; margin-bottom: 8px; border: 1px solid #edca73; border-radius: 11px; background: #fff8df; padding: 9px 10px; color: #765100; }
 .split-payment-suggestion b { font-size: 9px; }
 .split-payment-suggestion span { font-size: 8px; line-height: 1.45; }
+.return-investigation-suggestion { border-color: #e7bd52; background: #fff3c9; color: #765100; }
 .candidate-list { display: grid; gap: 7px; }
 .candidate-list article { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; border: 1px solid #eadfe1; border-radius: 12px; background: #fff; padding: 10px; }
 .candidate-list article.current { border-color: #aed15f; background: #f8ffe9; }

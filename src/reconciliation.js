@@ -39,6 +39,16 @@ function normalizeOperatorText(value) {
     .trim()
 }
 
+function sameTrierOperator(first, second) {
+  const firstCode = String(first?.operador ?? '').trim()
+  const secondCode = String(second?.operador ?? '').trim()
+  if (firstCode && secondCode) return firstCode === secondCode
+
+  const firstName = normalizeOperatorText(first?.operadorOriginal)
+  const secondName = normalizeOperatorText(second?.operadorOriginal)
+  return Boolean(firstName && secondName && firstName === secondName)
+}
+
 function operatorAliases(operator) {
   const aliases = Array.isArray(operator.pagpixAliases) ? operator.pagpixAliases : String(operator.pagpixName ?? '').split(/[,;\n]/)
   return [operator.name, ...aliases].map(normalizeOperatorText).filter(Boolean).sort((a, b) => b.length - a.length)
@@ -789,6 +799,29 @@ export function reconcile(files, toleranceValue, toleranceHours, manualUnmatches
     resolvePending(resolved)
   }
   pending.forEach((sale) => results.push(resolved.get(sale.numero)))
+
+  // Uma devolucao nao deve conciliar automaticamente uma venda. Ainda assim,
+  // quando data, colaborador e valor absoluto coincidem, o caso e forte o
+  // suficiente para ser destacado ao analista na lista de sem recebimento.
+  const returnRows = results.filter((row) => row.status === 'DEVOLUCAO' && row.sale)
+  results.forEach((row) => {
+    if (row.status !== 'SEM_RECEBIMENTO' || !row.sale) return
+    const candidates = returnRows
+      .map((returnRow) => returnRow.sale)
+      .filter((returnedSale) => sameDay(row.sale.dt, returnedSale.dt)
+        && sameTrierOperator(row.sale, returnedSale)
+        && Math.abs(Math.abs(Number(row.sale.valor || 0)) - Math.abs(Number(returnedSale.valor || 0))) < 0.005)
+      .sort((first, second) => Math.abs(first.min - row.sale.min) - Math.abs(second.min - row.sale.min))
+    if (!candidates.length) return
+    const closest = candidates[0]
+    row.returnSuggestion = {
+      returns: candidates,
+      closest,
+      count: candidates.length,
+      timeDifferenceMinutes: Math.abs(closest.min - row.sale.min),
+      criteria: 'Mesmo valor, data e colaborador',
+    }
+  })
 
   const crediarioCartao = closingGroups.flatMap((group) => group.receipts.map((item) => ({
     ...item,

@@ -284,6 +284,35 @@ test('não sugere pagamento dividido quando os recebimentos estão distantes da 
   assert.equal(output.results[0].splitPaymentSuggestion, undefined)
 })
 
+test('destaca possível devolução para venda sem recebimento com mesmo valor, data e colaborador', () => {
+  const trier = parseTrierLines([
+    '287100 1 CARTAO 05/10/26 09:15 65 97001 16 50,00 0,00 0,00 50,00 50,00',
+    '287101 1 CARTAO * Dev 05/10/26 10:05 55 97002 16 -50,00 0,00 0,00 -50,00 -50,00',
+  ])
+  const output = reconcile({ trier: { rows: trier }, pagpix: { rows: [] }, cielo: { rows: [] }, fechamento: { rows: [] } }, 0.5, 2)
+  const sale = output.results.find((row) => row.sale.numero === '287100')
+
+  assert.equal(sale.status, 'SEM_RECEBIMENTO')
+  assert.equal(sale.returnSuggestion.closest.numero, '287101')
+  assert.equal(sale.returnSuggestion.count, 1)
+  assert.equal(sale.returnSuggestion.timeDifferenceMinutes, 50)
+  assert.equal(output.results.find((row) => row.sale.numero === '287101').status, 'DEVOLUCAO')
+})
+
+test('não sugere devolução quando colaborador, data ou valor são diferentes', () => {
+  const trier = parseTrierLines([
+    '287110 1 CARTAO 05/10/26 09:15 65 97010 16 50,00 0,00 0,00 50,00 50,00',
+    '287111 1 CARTAO * Dev 05/10/26 10:05 55 97011 8 -50,00 0,00 0,00 -50,00 -50,00',
+    '287112 1 CARTAO * Dev 05/10/26 10:10 55 97012 16 -49,99 0,00 0,00 -49,99 -49,99',
+    '287113 1 CARTAO * Dev 06/10/26 10:15 55 97013 16 -50,00 0,00 0,00 -50,00 -50,00',
+  ])
+  const output = reconcile({ trier: { rows: trier }, pagpix: { rows: [] }, cielo: { rows: [] }, fechamento: { rows: [] } }, 0.5, 2)
+  const sale = output.results.find((row) => row.sale.numero === '287110')
+
+  assert.equal(sale.status, 'SEM_RECEBIMENTO')
+  assert.equal(sale.returnSuggestion, undefined)
+})
+
 test('conciliação manual junta as vendas 286626 e 286633 em um recebimento maior', () => {
   const trier = parseTrierLines([
     '286626 1 CARTAO 03/10/26 09:16 65 96015 3 171,93 12,76 -21,93 150,00 150,00',
