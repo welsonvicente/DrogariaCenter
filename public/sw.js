@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'utilitarios-dc-v2'
+const CACHE_VERSION = 'utilitarios-dc-v4'
 const CORE_CACHE = `${CACHE_VERSION}-core`
 const RUNTIME_CACHE = `${CACHE_VERSION}-runtime`
 const BASE_PATH = new URL('./', self.location.href).pathname
@@ -21,7 +21,13 @@ self.addEventListener('install', (event) => {
 })
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => ![CORE_CACHE, RUNTIME_CACHE].includes(key)).map((key) => caches.delete(key)))).then(() => self.clients.claim()))
+  event.waitUntil(caches.keys()
+    .then((keys) => Promise.all(keys.filter((key) => ![CORE_CACHE, RUNTIME_CACHE].includes(key)).map((key) => caches.delete(key))))
+    .then(() => self.clients.claim())
+    // Atualiza imediatamente abas que ainda executam um bundle antigo, mesmo
+    // quando esse bundle nao possuia o listener de controllerchange.
+    .then(() => self.clients.matchAll({ type: 'window', includeUncontrolled: true }))
+    .then((clients) => Promise.all(clients.map((client) => client.navigate(client.url)))))
 })
 
 self.addEventListener('message', (event) => {
@@ -40,6 +46,21 @@ self.addEventListener('fetch', (event) => {
       caches.open(RUNTIME_CACHE).then((cache) => cache.put(request, copy))
       return response
     }).catch(async () => (await caches.match(request)) || (await caches.match(appAsset('index.html'))) || (await caches.match(appAsset()))))
+    return
+  }
+
+  // Codigo e estilos precisam ser network-first. Assim uma publicacao nova nao
+  // fica escondida por um bundle antigo guardado no PWA.
+  const isApplicationCode = ['script', 'style', 'worker'].includes(request.destination)
+    || /\/assets\/.*\.(?:js|mjs|css)$/i.test(url.pathname)
+  if (isApplicationCode) {
+    event.respondWith(fetch(request).then((response) => {
+      if (response && response.status === 200 && response.type !== 'opaque') {
+        const copy = response.clone()
+        caches.open(RUNTIME_CACHE).then((cache) => cache.put(request, copy))
+      }
+      return response
+    }).catch(() => caches.match(request)))
     return
   }
 

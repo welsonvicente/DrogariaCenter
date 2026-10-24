@@ -11,6 +11,7 @@ const ANALYST_MARKERS_STORAGE_KEY = 'drogaria-center:trier:analyst-markers:v1'
 const STAFF_STORAGE_KEY = 'drogaria-center:trier:staff-directory:v1'
 const STAFF_MIGRATION_KEY = 'drogaria-center:trier:staff-directory:migration:v2'
 const RESULT_TAB_STORAGE_KEY = 'drogaria-center:trier:result-tab:v1'
+const RESULT_DATE_STORAGE_KEY = 'drogaria-center:trier:result-date:v1'
 const TABLE_UI_STORAGE_PREFIX = 'drogaria-center:trier:table-ui:v1:'
 const PENDING_UI_STORAGE_KEY = 'drogaria-center:trier:pending-ui:v1'
 const APP_BASE_PATH = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`
@@ -51,6 +52,11 @@ function loadStaffDirectory() {
 function loadResultTab() {
   try { return window.localStorage.getItem(RESULT_TAB_STORAGE_KEY) || 'resumo' }
   catch { return 'resumo' }
+}
+
+function loadResultDate() {
+  try { return window.localStorage.getItem(RESULT_DATE_STORAGE_KEY) || 'all' }
+  catch { return 'all' }
 }
 
 function loadPendingUiState() {
@@ -248,6 +254,11 @@ function normalizedDateKey(value) {
   return `${match[1]}/${match[2]}/${match[3].slice(-2)}`
 }
 
+function dateKeyValue(value) {
+  const match = normalizedDateKey(value).match(/(\d{2})\/(\d{2})\/(\d{2})/)
+  return match ? Number(`20${match[3]}${match[2]}${match[1]}`) : 0
+}
+
 function isCieloPixReceipt(receipt) {
   return receipt?.forma === 'PIX' || receipt?.tipo === 'PIX' || /\bPIX\b/i.test(receipt?.raw || '')
 }
@@ -322,7 +333,7 @@ function buildPendingCases(results, noSale, toleranceHours, history = []) {
 }
 
 function historyTypeLabel(type) {
-  return ({ manual_match: 'Conciliação manual', unmatch: 'Conciliação desfeita', restore: 'Conciliação restaurada', note: 'Observação adicionada' })[type] || 'Alteração'
+  return ({ manual_match: 'Conciliação manual', return_match: 'Devolução conciliada', return_restore: 'Conciliação da devolução desfeita', unmatch: 'Conciliação desfeita', restore: 'Conciliação restaurada', note: 'Observação adicionada' })[type] || 'Alteração'
 }
 
 function loadAnalystMarkers() {
@@ -510,24 +521,28 @@ function AnalystMarker({ marker, onOpen, staff }) {
   </button>
 }
 
-function ReconciliationAction({ row, onUnconcile, onRestore }) {
+function ReconciliationAction({ row, onUnconcile, onRestore, onRestoreReturn }) {
+  if (row.returnMatch && onRestoreReturn) return <button type="button" className="reconciliation-action restore" onClick={() => onRestoreReturn(row)} title="Desfazer o vínculo com esta devolução">↶ Desfazer devolução</button>
   if (row.manualUnmatch && onRestore) return <button type="button" className="reconciliation-action restore" onClick={() => onRestore(row)} title="Voltar a considerar este par na conciliação">↶ Restaurar</button>
   if (row.recebimento && onUnconcile) return <button type="button" className="reconciliation-action" onClick={() => onUnconcile(row)} title="Desfazer esta conciliação e devolver aos pendentes">↶ Desconciliar</button>
   return null
 }
 
-function ReturnSuggestion({ suggestion, staff, onReview }) {
+function ReturnSuggestion({ suggestion, staff, onReview, onConfirm }) {
   if (!suggestion?.closest) return <span>—</span>
   const returnedSale = suggestion.closest
-  const content = <>
+  return <div className="return-suggestion">
     <b>↩ Sugestão: possível devolução</b>
     <span>Devolução {returnedSale.numero} · {formatMoney(Math.abs(returnedSale.valor))}</span>
     <small>{returnedSale.data} · {returnedSale.hora || 'sem horário'} · {staffNameForRow(returnedSale, 'Trier', staff)}</small>
     <small>Diferença de horário: {formatDuration(Number(suggestion.timeDifferenceMinutes || 0) * 60)}{suggestion.count > 1 ? ` · ${suggestion.count} opções` : ''}</small>
-  </>
-  return onReview
-    ? <button type="button" className="return-suggestion" onClick={onReview} title="Confira a devolução e registre sua conclusão">{content}</button>
-    : <span className="return-suggestion">{content}</span>
+    {(onConfirm || onReview) && <span className="return-suggestion-actions">{onConfirm && <button type="button" onClick={onConfirm}>✓ Conciliar devolução</button>}{onReview && <button type="button" onClick={onReview}>Registrar observação</button>}</span>}
+  </div>
+}
+
+function ConfirmedReturn({ row, staff }) {
+  if (!row.returnedSale) return <span>—</span>
+  return <div className="confirmed-return"><b>✓ Devolução conciliada</b><span>Devolução {row.returnedSale.numero} · {formatMoney(Math.abs(row.returnedSale.valor))}</span><small>{row.returnedSale.data} · {row.returnedSale.hora || 'sem horário'} · {staffNameForRow(row.returnedSale, 'Trier', staff)}</small></div>
 }
 
 function ReviewEditor({ entry, staff, onSave, onRemove, onClose }) {
@@ -539,7 +554,7 @@ function ReviewEditor({ entry, staff, onSave, onRemove, onClose }) {
   return <div className="review-modal-backdrop no-print" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="review-modal" role="dialog" aria-modal="true" aria-labelledby="review-modal-title"><div className="review-modal-heading"><div><span className="section-kicker">Revisão manual</span><h3 id="review-modal-title">Registrar motivo localizado</h3><p>Essa informação fica salva neste navegador e acompanha as exportações.</p></div><button type="button" onClick={onClose} aria-label="Fechar">×</button></div><form onSubmit={(event) => { event.preventDefault(); onSave(entry.key, { ...marker, markedAt: marker.markedAt || new Date().toISOString(), updatedAt: new Date().toISOString(), staffIds, resolvedTime, note: note.trim() }); onClose() }}><fieldset><legend>Colaboradores envolvidos</legend><div className="review-modal-staff">{selectableStaff.map((person) => <label key={person.id} className={staffIds.includes(person.id) ? 'selected' : ''}><input type="checkbox" checked={staffIds.includes(person.id)} onChange={() => setStaffIds((current) => current.includes(person.id) ? current.filter((id) => id !== person.id) : [...current, person.id])} /><span>{person.name}</span><small>Trier nº {person.trierCode}</small></label>)}</div></fieldset><label>Horário em que o lançamento foi localizado<input type="time" value={resolvedTime} onChange={(event) => setResolvedTime(event.target.value)} /></label><label>Observação<textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Ex.: recebimento localizado no fechamento do caixa seguinte; horário informado incorretamente." /></label><div className="review-modal-actions">{entry.marker && <button className="review-reopen" type="button" onClick={() => { onRemove(entry.key); onClose() }}>Reabrir como pendente</button>}<button type="button" onClick={onClose}>Cancelar</button><button className="review-confirm" type="submit">Salvar como revisado</button></div></form></section></div>
 }
 
-function SalesTable({ rows, markers = {}, onSaveMarker, onRemoveMarker, onSetMarkers, markerKind, staff = DEFAULT_STAFF, viewKey = 'vendas', onUnconcile, onRestore }) {
+function SalesTable({ rows, markers = {}, onSaveMarker, onRemoveMarker, onSetMarkers, markerKind, staff = DEFAULT_STAFF, viewKey = 'vendas', onUnconcile, onRestore, onConfirmReturn, onRestoreReturn }) {
   const { filters, setFilters, reviewFilter, setReviewFilter, selectedStaff, setSelectedStaff, timeStart, setTimeStart, timeEnd, setTimeEnd, scrollRef, saveScroll, activeFilterCount, clearTableFilters } = usePersistentTableUi(viewKey)
   const [editingReview, setEditingReview] = useState(null)
   const columns = [
@@ -556,9 +571,10 @@ function SalesTable({ rows, markers = {}, onSaveMarker, onRemoveMarker, onSetMar
     { key: 'source', label: 'Origem', value: (row) => row.fonte || '—' },
     { key: 'receivedTime', label: 'Hora receb.', value: (row) => row.recebimento?.hora || '—' },
     { key: 'difference', label: 'Diferença', value: (row) => row.diff !== undefined ? formatMoney(row.diff) : '—' },
-    ...(rows.some((row) => row.returnSuggestion) ? [{ key: 'returnSuggestion', label: 'Possível devolução', value: (row) => row.returnSuggestion ? `Verificar devolução ${row.returnSuggestion.closest.numero}` : '—', render: (row) => <ReturnSuggestion suggestion={row.returnSuggestion} staff={staff} onReview={row.returnSuggestion && markerKind ? () => setEditingReview({ key: row.__markerKey, marker: markers[row.__markerKey], defaultTime: row.returnSuggestion.closest.hora || row.sale.hora }) : null} /> }] : []),
+    ...(rows.some((row) => row.returnSuggestion) ? [{ key: 'returnSuggestion', label: 'Possível devolução', value: (row) => row.returnSuggestion ? `Verificar devolução ${row.returnSuggestion.closest.numero}` : '—', render: (row) => <ReturnSuggestion suggestion={row.returnSuggestion} staff={staff} onConfirm={row.returnSuggestion && onConfirmReturn ? () => onConfirmReturn(row) : null} onReview={row.returnSuggestion && markerKind ? () => setEditingReview({ key: row.__markerKey, marker: markers[row.__markerKey], defaultTime: row.returnSuggestion.closest.hora || row.sale.hora }) : null} /> }] : []),
+    ...(rows.some((row) => row.returnMatch) ? [{ key: 'confirmedReturn', label: 'Devolução vinculada', value: (row) => row.returnedSale ? `Devolução ${row.returnedSale.numero}` : '—', render: (row) => <ConfirmedReturn row={row} staff={staff} /> }] : []),
     { key: 'status', label: 'Status', value: (row) => STATUS_LABEL[row.status], render: (row) => <StatusPill status={row.status} /> },
-    ...((onUnconcile || onRestore) ? [{ key: 'reconciliationAction', label: 'Ação', filterable: false, value: () => '', render: (row) => <ReconciliationAction row={row} onUnconcile={onUnconcile} onRestore={onRestore} /> }] : []),
+    ...((onUnconcile || onRestore || onRestoreReturn) ? [{ key: 'reconciliationAction', label: 'Ação', filterable: false, value: () => '', render: (row) => <ReconciliationAction row={row} onUnconcile={onUnconcile} onRestore={onRestore} onRestoreReturn={onRestoreReturn} /> }] : []),
     ...(markerKind ? [{ key: 'analysis', label: 'Análise', filterable: false, value: () => '', render: (row) => <AnalystMarker marker={markers[row.__markerKey]} staff={staff} onOpen={() => setEditingReview({ key: row.__markerKey, marker: markers[row.__markerKey], defaultTime: row.sale.hora })} /> }] : []),
   ]
   const { orderedColumns, moveColumn, shiftColumn } = useReorderableColumns(columns, 'drogaria-center:trier:sales-column-order:v1')
@@ -716,7 +732,7 @@ function PendingCenter({ cases, history, staff, splitSuggestionMinutes, onSimula
   </section>
 }
 
-function InvestigationModal({ entry, files, results, noSale, manualReceipts, toleranceHours, history, staff, onClose, onMatch, onUnconcile, onRestore, onAddNote }) {
+function InvestigationModal({ entry, files, results, noSale, manualReceipts, toleranceHours, history, staff, onClose, onMatch, onUnconcile, onRestore, onConfirmReturn, onAddNote }) {
   const [note, setNote] = useState('')
   const [selectedReceiptKeys, setSelectedReceiptKeys] = useState(() => (entry.row?.splitPaymentSuggestion?.receipts ?? []).map(reconciliationReceiptKey))
   const [selectedSaleKeys, setSelectedSaleKeys] = useState(() => (entry.row?.splitSalesSuggestion?.sales ?? []).map(reconciliationSaleKey))
@@ -834,7 +850,7 @@ function InvestigationModal({ entry, files, results, noSale, manualReceipts, tol
         <article className="investigation-primary"><span>{sale ? 'Venda Trier' : 'Recebimento sem venda'}</span>{sale ? <><h4>Venda {sale.numero}</h4><dl><div><dt>Valor</dt><dd>{formatMoney(sale.valor)}</dd></div><div><dt>Data e hora</dt><dd>{sale.data} · {sale.hora || '—'}</dd></div><div><dt>Forma</dt><dd>{sale.forma}</dd></div><div><dt>Canal Trier</dt><dd>{sale.tele === 'Sim' ? 'Delivery' : 'Balcão'}</dd></div><div><dt>Vendedor</dt><dd>{staffNameForRow(sale, 'Trier', staff)}</dd></div></dl></> : <><h4>{receipt.fonte}</h4><dl><div><dt>Valor</dt><dd>{formatMoney(receipt.valor)}</dd></div><div><dt>Data e hora</dt><dd>{receipt.data} · {receipt.hora || '—'}</dd></div><div><dt>Forma</dt><dd>{receipt.tipo || receipt.bandeira || '—'}</dd></div></dl></>}{entry.issues.length > 0 && <div className="investigation-alerts">{entry.issues.map((issue) => <span key={issue}>{ISSUE_LABELS[issue]}</span>)}</div>}{entry.row?.manualUnmatch && <button type="button" className="investigation-restore" onClick={() => onRestore(entry.row)}>↶ Restaurar conciliação automática</button>}{sale && entry.row?.recebimento && !entry.row?.manualUnmatch && <button type="button" className="investigation-unmatch" onClick={() => onUnconcile(entry.row)}>↶ Desconciliar este vínculo</button>}</article>
         <div className="candidate-panel">
           <div className="candidate-heading"><div><span>{sale ? 'Possíveis recebimentos' : 'Possíveis vendas'}</span><b>{sale ? `${visibleReceiptCandidates.length} de ${receiptCandidates.length}` : saleCandidates.length} opção(ões) da mesma data</b></div><small>{sale ? 'Qualquer origem, forma ou valor pode ser selecionado manualmente' : 'Marque uma ou mais vendas'}</small></div>
-          {sale && entry.row?.returnSuggestion && <div className="split-payment-suggestion return-investigation-suggestion"><b>↩ Verifique uma possível devolução</b><span>A devolução {entry.row.returnSuggestion.closest.numero}, de {formatMoney(Math.abs(entry.row.returnSuggestion.closest.valor))}, foi lançada no mesmo dia pelo mesmo colaborador. O sistema apenas sugere: confirme no relatório e registre sua conclusão na observação.</span></div>}
+          {sale && entry.row?.returnSuggestion && <div className="split-payment-suggestion return-investigation-suggestion"><b>↩ Verifique uma possível devolução</b><span>A devolução {entry.row.returnSuggestion.closest.numero}, de {formatMoney(Math.abs(entry.row.returnSuggestion.closest.valor))}, foi lançada no mesmo dia pelo mesmo colaborador. O sistema apenas sugere: confirme no relatório antes de conciliar.</span><button type="button" onClick={() => onConfirmReturn(entry.row)}>✓ Conciliar esta devolução</button></div>}
           {sale && entry.row?.splitPaymentSuggestion && <div className="split-payment-suggestion"><b>Possível pagamento dividido</b><span>Dois recebimentos próximos somam {formatMoney(entry.row.splitPaymentSuggestion.total)}, com diferença de {formatMoney(entry.row.splitPaymentSuggestion.diff)}. Eles foram pré-selecionados apenas como sugestão; confirme somente após revisar.</span></div>}
           {!sale && entry.row?.splitSalesSuggestion && <div className="split-payment-suggestion"><b>Possível pagamento de duas vendas</b><span>As vendas {entry.row.splitSalesSuggestion.sales.map((item) => item.numero).join(' + ')} somam {formatMoney(entry.row.splitSalesSuggestion.total)} para este recebimento de {formatMoney(receipt.valor)}. Diferença de {formatMoney(entry.row.splitSalesSuggestion.diff)} e intervalo de {entry.row.splitSalesSuggestion.salesDistanceMinutes} minutos entre as vendas. Elas foram pré-selecionadas apenas como sugestão; confirme somente após revisar.</span></div>}
           {sale && <label className="candidate-search"><span>Buscar recebimento</span><input value={receiptSearch} onChange={(event) => setReceiptSearch(event.target.value)} placeholder="Digite valor, horário, PaggPix, Cielo, PIX ou cartão" /></label>}
@@ -876,7 +892,7 @@ function exportRows(output, markers = {}, staff = DEFAULT_STAFF) {
   const closingReceipts = output.crediarioCartao ?? []
   return [
     ...sales.map((row) => ({
-      'Número da venda': row.sale.numero, Data: row.sale.data, 'Hora da venda': row.sale.hora || '', 'Vendedor Trier': staffNameForRow(row.sale, 'Trier', staff), 'Operador PaggPix': row.recebimento && row.fonte === 'PaggPix' ? staffNameForRow(row.recebimento, 'PaggPix', staff) : '', 'Forma de pagamento': row.sale.forma || '', 'Canal Trier': trierChannel(row) === '—' ? '' : trierChannel(row), 'Canal do recebimento': receiptChannel(row) === '—' ? '' : receiptChannel(row), 'Conferência de canal': channelComparison(row) === '—' ? '' : channelComparison(row), 'Valor da venda': row.sale.valor, 'Valor recebido': row.recebimento?.valor ?? '', Origem: row.fonte || '', 'Hora do recebimento': row.recebimento?.hora || '', 'Diferença de valor': row.diff ?? '', 'Vendas agrupadas': row.groupSales?.map((sale) => sale.numero).join(', ') || '', 'Total das vendas agrupadas': row.groupSalesValue ?? '', 'Total recebido no grupo': row.groupReceivedValue ?? '', Status: STATUS_LABEL[row.status], 'Sugestão de devolução': row.returnSuggestion ? `Verificar devolução ${row.returnSuggestion.closest.numero} de ${formatMoney(Math.abs(row.returnSuggestion.closest.valor))}; mesmo valor, data e colaborador` : '', 'Motivo da conciliação': row.motivo || '', 'Ação manual': row.manualMatch ? 'Conciliado manualmente' : row.manualUnmatch ? 'Desconciliado manualmente' : '', ...markerExportFields(markers[row.__markerKey], staff, row.status === 'SEM_RECEBIMENTO'),
+      'Número da venda': row.sale.numero, Data: row.sale.data, 'Hora da venda': row.sale.hora || '', 'Vendedor Trier': staffNameForRow(row.sale, 'Trier', staff), 'Operador PaggPix': row.recebimento && row.fonte === 'PaggPix' ? staffNameForRow(row.recebimento, 'PaggPix', staff) : '', 'Forma de pagamento': row.sale.forma || '—', 'Canal Trier': trierChannel(row) === '—' ? '' : trierChannel(row), 'Canal do recebimento': receiptChannel(row) === '—' ? '' : receiptChannel(row), 'Conferência de canal': channelComparison(row) === '—' ? '' : channelComparison(row), 'Valor da venda': row.sale.valor, 'Valor recebido': row.recebimento?.valor ?? '', Origem: row.fonte || '', 'Hora do recebimento': row.recebimento?.hora || '', 'Diferença de valor': row.diff ?? '', 'Vendas agrupadas': row.groupSales?.map((sale) => sale.numero).join(', ') || '', 'Total das vendas agrupadas': row.groupSalesValue ?? '', 'Total recebido no grupo': row.groupReceivedValue ?? '', Status: STATUS_LABEL[row.status], 'Sugestão de devolução': row.returnMatch ? `Conciliada com a devolução ${row.returnedSale?.numero || ''}` : row.returnSuggestion ? `Verificar devolução ${row.returnSuggestion.closest.numero} de ${formatMoney(Math.abs(row.returnSuggestion.closest.valor))}; mesmo valor, data e colaborador` : '', 'Motivo da conciliação': row.motivo || '', 'Ação manual': row.returnMatch ? 'Devolução conciliada manualmente' : row.manualMatch ? 'Conciliado manualmente' : row.manualUnmatch ? 'Desconciliado manualmente' : '', ...markerExportFields(markers[row.__markerKey], staff, row.status === 'SEM_RECEBIMENTO'),
     })),
     ...receipts.map((row) => ({
       'Número da venda': '', Data: row.data, 'Hora da venda': '', 'Vendedor Trier': '', 'Operador PaggPix': row.fonte === 'PaggPix' ? staffNameForRow(row, 'PaggPix', staff) : '', 'Forma de pagamento': '', 'Canal Trier': '', 'Canal do recebimento': row.tipo || row.bandeira || '', 'Conferência de canal': '', 'Valor da venda': '', 'Valor recebido': row.valor, Origem: row.fonte, 'Hora do recebimento': row.hora || '', 'Diferença de valor': '', Status: STATUS_LABEL[row.status], 'Sugestão de devolução': '', 'Motivo da conciliação': row.motivo || '', 'Ação manual': row.manualUnmatch ? 'Desconciliado manualmente' : '', ...markerExportFields(markers[row.__markerKey], staff),
@@ -1319,11 +1335,13 @@ export default function App() {
   const [splitSuggestionMinutes, setSplitSuggestionMinutes] = useState(15)
   const [output, setOutput] = useState(null)
   const [tab, setTab] = useState(loadResultTab)
+  const [resultDate, setResultDate] = useState(loadResultDate)
   const [error, setError] = useState('')
   const [analystMarkers, setAnalystMarkers] = useState(loadAnalystMarkers)
   const [manualUnmatches, setManualUnmatches] = useState({})
   const [manualMatches, setManualMatches] = useState({})
   const [manualReceipts, setManualReceipts] = useState({})
+  const [returnMatches, setReturnMatches] = useState({})
   const [reconciliationHistory, setReconciliationHistory] = useState([])
   const [investigatingCase, setInvestigatingCase] = useState(null)
   const [staff, setStaff] = useState(loadStaffDirectory)
@@ -1348,6 +1366,11 @@ export default function App() {
   }, [tab])
 
   useEffect(() => {
+    try { window.localStorage.setItem(RESULT_DATE_STORAGE_KEY, resultDate) }
+    catch { /* mantém o filtro funcionando mesmo sem armazenamento */ }
+  }, [resultDate])
+
+  useEffect(() => {
     let active = true
     loadReconciliationSession().then((saved) => {
       if (!active || !saved?.files) return
@@ -1358,6 +1381,7 @@ export default function App() {
       const restoredManualUnmatches = saved.manualUnmatches && typeof saved.manualUnmatches === 'object' ? saved.manualUnmatches : {}
       const restoredManualMatches = saved.manualMatches && typeof saved.manualMatches === 'object' ? saved.manualMatches : {}
       const restoredManualReceipts = saved.manualReceipts && typeof saved.manualReceipts === 'object' ? saved.manualReceipts : {}
+      const restoredReturnMatches = saved.returnMatches && typeof saved.returnMatches === 'object' ? saved.returnMatches : {}
       const restoredHistory = Array.isArray(saved.reconciliationHistory) ? saved.reconciliationHistory : []
       setFiles(restoredFiles)
       setToleranceValue(restoredValueTolerance)
@@ -1366,12 +1390,13 @@ export default function App() {
       setManualUnmatches(restoredManualUnmatches)
       setManualMatches(restoredManualMatches)
       setManualReceipts(restoredManualReceipts)
+      setReturnMatches(restoredReturnMatches)
       setReconciliationHistory(restoredHistory)
       setHistorySavedAt(saved.savedAt || '')
       setHistoryMessage('Última sessão restaurada. Você pode trocar qualquer relatório quando quiser.')
       if (restoredFiles.trier && (restoredFiles.pagpix || restoredFiles.cielo)) {
         try {
-          setOutput(reconcile(restoredFiles, Number(restoredValueTolerance) || 0, Number(restoredHourTolerance) || 0, restoredManualUnmatches, restoredManualMatches, restoredManualReceipts, restoredSplitSuggestionMinutes))
+          setOutput(reconcile(restoredFiles, Number(restoredValueTolerance) || 0, Number(restoredHourTolerance) || 0, restoredManualUnmatches, restoredManualMatches, restoredManualReceipts, restoredSplitSuggestionMinutes, restoredReturnMatches))
         } catch {
           setHistoryMessage('Os relatórios foram restaurados. Execute a conciliação para atualizar o resultado.')
         }
@@ -1383,7 +1408,7 @@ export default function App() {
   useEffect(() => {
     if (!historyReady || !Object.values(files).some(Boolean)) return undefined
     const timer = window.setTimeout(() => {
-      saveReconciliationSession({ files, toleranceValue, toleranceHours, splitSuggestionMinutes, manualUnmatches, manualMatches, manualReceipts, reconciliationHistory })
+      saveReconciliationSession({ files, toleranceValue, toleranceHours, splitSuggestionMinutes, manualUnmatches, manualMatches, manualReceipts, returnMatches, reconciliationHistory })
         .then(() => {
           setHistorySavedAt(new Date().toISOString())
           setHistoryMessage('Histórico atualizado automaticamente neste navegador.')
@@ -1391,7 +1416,7 @@ export default function App() {
         .catch(() => setHistoryMessage('Não foi possível salvar o histórico neste navegador. Verifique se o armazenamento local está permitido.'))
     }, 300)
     return () => window.clearTimeout(timer)
-  }, [files, toleranceValue, toleranceHours, splitSuggestionMinutes, manualUnmatches, manualMatches, manualReceipts, reconciliationHistory, historyReady])
+  }, [files, toleranceValue, toleranceHours, splitSuggestionMinutes, manualUnmatches, manualMatches, manualReceipts, returnMatches, reconciliationHistory, historyReady])
 
   function saveStaffMember(person) {
     setStaff((current) => current.some((item) => item.id === person.id) ? current.map((item) => item.id === person.id ? { ...item, ...person } : item) : [...current, person])
@@ -1413,9 +1438,11 @@ export default function App() {
       await clearReconciliationSession()
       setFiles({ ...EMPTY_FILES })
       setOutput(null)
+      setResultDate('all')
       setManualUnmatches({})
       setManualMatches({})
       setManualReceipts({})
+      setReturnMatches({})
       setReconciliationHistory([])
       setInvestigatingCase(null)
       setDiscountAudit(null)
@@ -1464,6 +1491,7 @@ export default function App() {
       setManualUnmatches({})
       setManualMatches({})
       setManualReceipts({})
+      setReturnMatches({})
       setInvestigatingCase(null)
       if (key === 'trier') setDiscountAudit(null)
       if (!lines.length) setError(`Não consegui extrair nenhum texto de “${file.name}”. Se for um PDF escaneado (imagem), será necessário OCR.`)
@@ -1473,7 +1501,7 @@ export default function App() {
 
   function runReconciliation() {
     setError('')
-    try { setOutput(reconcile(files, Number(toleranceValue) || 0, Number(toleranceHours) || 0, manualUnmatches, manualMatches, manualReceipts, splitSuggestionMinutes)) }
+    try { setOutput(reconcile(files, Number(toleranceValue) || 0, Number(toleranceHours) || 0, manualUnmatches, manualMatches, manualReceipts, splitSuggestionMinutes, returnMatches)) }
     catch (exception) { setOutput(null); setError(exception.message) }
   }
 
@@ -1481,7 +1509,7 @@ export default function App() {
     const normalizedMinutes = Math.min(720, Math.max(1, Math.round(Number(minutes) || 15)))
     setError('')
     try {
-      setOutput(reconcile(files, Number(toleranceValue) || 0, Number(toleranceHours) || 0, manualUnmatches, manualMatches, manualReceipts, normalizedMinutes))
+      setOutput(reconcile(files, Number(toleranceValue) || 0, Number(toleranceHours) || 0, manualUnmatches, manualMatches, manualReceipts, normalizedMinutes, returnMatches))
       setSplitSuggestionMinutes(normalizedMinutes)
       setTab('pendencias')
       setHistoryMessage(`Simulação de pagamentos divididos atualizada para ${normalizedMinutes} minuto(s). Nenhuma conciliação foi aplicada automaticamente.`)
@@ -1503,12 +1531,13 @@ export default function App() {
     setReconciliationHistory((current) => [entry, ...current].slice(0, 300))
   }
 
-  function recalculateWithOverrides(nextManualUnmatches, nextManualMatches, nextManualReceipts = manualReceipts, nextTab = tab) {
+  function recalculateWithOverrides(nextManualUnmatches, nextManualMatches, nextManualReceipts = manualReceipts, nextTab = tab, nextReturnMatches = returnMatches) {
     try {
-      const nextOutput = reconcile(files, Number(toleranceValue) || 0, Number(toleranceHours) || 0, nextManualUnmatches, nextManualMatches, nextManualReceipts, splitSuggestionMinutes)
+      const nextOutput = reconcile(files, Number(toleranceValue) || 0, Number(toleranceHours) || 0, nextManualUnmatches, nextManualMatches, nextManualReceipts, splitSuggestionMinutes, nextReturnMatches)
       setManualUnmatches(nextManualUnmatches)
       setManualMatches(nextManualMatches)
       setManualReceipts(nextManualReceipts)
+      setReturnMatches(nextReturnMatches)
       setOutput(nextOutput)
       setTab(nextTab)
       setHistoryMessage('A decisão manual foi salva neste navegador.')
@@ -1572,6 +1601,32 @@ export default function App() {
     if (recalculateWithOverrides(nextUnmatches, nextMatches, nextManualReceipts, 'pendencias')) appendReconciliationHistory('manual_match', sales[0], receipts[0], `${salesLabel}, somando ${formatMoney(salesTotal)}, foram vinculadas a ${receipts.length} recebimento(s), somando ${formatMoney(receiptTotal)}.`)
   }
 
+  function handleConfirmReturn(row) {
+    const sale = row?.sale
+    const returnedSale = row?.returnSuggestion?.closest
+    if (!sale || !returnedSale) return
+    if (!window.confirm(`Confirmar que a venda ${sale.numero}, de ${formatMoney(sale.valor)}, corresponde à devolução ${returnedSale.numero}, de ${formatMoney(Math.abs(returnedSale.valor))}? A venda sairá de “Sem recebimento”.`)) return
+    const saleKey = reconciliationSaleKey(sale)
+    const returnSaleKey = reconciliationSaleKey(returnedSale)
+    const nextReturnMatches = { ...returnMatches, [saleKey]: { saleKey, returnSaleKey, createdAt: new Date().toISOString() } }
+    const nextUnmatches = { ...manualUnmatches }
+    delete nextUnmatches[saleKey]
+    if (recalculateWithOverrides(nextUnmatches, manualMatches, manualReceipts, tab, nextReturnMatches)) {
+      appendReconciliationHistory('return_match', sale, null, `Venda ${sale.numero} vinculada à devolução ${returnedSale.numero}, com mesmo valor, data e colaborador.`)
+    }
+  }
+
+  function handleRestoreReturn(row) {
+    const saleKey = row?.returnMatchSaleKey || (row?.sale ? reconciliationSaleKey(row.sale) : '')
+    if (!saleKey || !returnMatches[saleKey]) return
+    if (!window.confirm(`Desfazer a conciliação da venda ${row.sale.numero} com a devolução ${row.returnedSale?.numero || ''}? A venda voltará para “Sem recebimento”.`)) return
+    const nextReturnMatches = { ...returnMatches }
+    delete nextReturnMatches[saleKey]
+    if (recalculateWithOverrides(manualUnmatches, manualMatches, manualReceipts, 'sem_recebimento', nextReturnMatches)) {
+      appendReconciliationHistory('return_restore', row.sale, null, `O vínculo com a devolução ${row.returnedSale?.numero || ''} foi removido.`)
+    }
+  }
+
   function handleInvestigationNote(entry, note) {
     appendReconciliationHistory('note', entry.sale, entry.receipt, note)
     setHistoryMessage('Observação adicionada ao histórico deste registro.')
@@ -1585,11 +1640,21 @@ export default function App() {
     setDiscountAudit({ mode: discountMode, threshold })
   }
 
-  const results = output?.results ?? []; const noSale = output?.semVenda ?? []; const crediarioCartao = output?.crediarioCartao ?? []; const fechamentoCrediario = output?.fechamentoCrediario ?? []
+  const allResults = output?.results ?? []
+  const allNoSale = output?.semVenda ?? []
+  const allCrediarioCartao = output?.crediarioCartao ?? []
+  const allFechamentoCrediario = output?.fechamentoCrediario ?? []
+  const availableDates = [...new Set([...allResults.map((row) => row.sale?.data), ...allNoSale.map((row) => row.data), ...allCrediarioCartao.map((row) => row.data)].filter(Boolean).map(normalizedDateKey))].sort((first, second) => dateKeyValue(second) - dateKeyValue(first))
+  const dateMatches = (value) => resultDate === 'all' || normalizedDateKey(value) === resultDate
+  const results = allResults.filter((row) => dateMatches(row.sale?.data))
+  const noSale = allNoSale.filter((row) => dateMatches(row.data))
+  const crediarioCartao = allCrediarioCartao.filter((row) => dateMatches(row.data))
+  const fechamentoCrediario = allFechamentoCrediario.filter((row) => dateMatches(row.data))
+  const visibleOutput = output ? { ...output, results, semVenda: noSale, crediarioCartao, fechamentoCrediario } : null
   const pendingCases = buildPendingCases(results, noSale, toleranceHours, reconciliationHistory)
-  const accounting = results.filter((row) => row.status !== 'DEVOLUCAO')
+  const accounting = results.filter((row) => !['DEVOLUCAO', 'DEVOLUCAO_CONCILIADA'].includes(row.status))
   const counts = {
-    total: accounting.length, pix: accounting.filter((row) => row.sale.forma === 'PIX').length, card: accounting.filter((row) => row.sale.forma === 'CARTAO').length, reconciled: accounting.filter((row) => row.status === 'CONCILIADA').length, missing: accounting.filter((row) => row.status === 'SEM_RECEBIMENTO').length, divergent: accounting.filter((row) => row.status === 'DIVERGENCIA').length, pixNoSale: noSale.filter((row) => row.fonte === 'PaggPix').length, cardNoSale: noSale.filter((row) => row.fonte === 'Cielo').length, duplicates: noSale.filter((row) => row.status === 'DUPLICADO').length, returns: results.filter((row) => row.status === 'DEVOLUCAO').length,
+    total: accounting.length, pix: accounting.filter((row) => row.sale.forma === 'PIX').length, card: accounting.filter((row) => row.sale.forma === 'CARTAO').length, reconciled: accounting.filter((row) => row.status === 'CONCILIADA').length, missing: accounting.filter((row) => row.status === 'SEM_RECEBIMENTO').length, divergent: accounting.filter((row) => row.status === 'DIVERGENCIA').length, pixNoSale: noSale.filter((row) => row.fonte === 'PaggPix').length, cardNoSale: noSale.filter((row) => row.fonte === 'Cielo').length, duplicates: noSale.filter((row) => row.status === 'DUPLICADO').length, returns: results.filter((row) => row.status === 'DEVOLUCAO').length, returnedReconciled: results.filter((row) => row.status === 'DEVOLUCAO_CONCILIADA').length,
   }
   const totalValue = accounting.reduce((sum, row) => sum + row.sale.valor, 0)
   const matchedValue = accounting.filter((row) => ['CONCILIADA', 'DIVERGENCIA'].includes(row.status)).reduce((sum, row) => sum + row.sale.valor, 0)
@@ -1601,8 +1666,12 @@ export default function App() {
   const highDiscountRows = discountAudit ? findHighDiscountSales(files.trier?.rows ?? [], discountAudit.mode, discountAudit.threshold) : []
   const highDiscountTotal = highDiscountRows.reduce((sum, sale) => sum + Number(sale.descontoValor || 0), 0)
   const highDiscountMaxPercent = highDiscountRows.reduce((highest, sale) => Math.max(highest, Number(sale.descontoPercentual || 0)), 0)
-  const kpis = [['Total de vendas', counts.total], ['Vendas PIX', counts.pix], ['Vendas cartão', counts.card], ['Conciliadas', counts.reconciled], ['Não conciliadas', counts.missing], ['PaggPix sem venda', counts.pixNoSale], ['Cielo sem venda', counts.cardNoSale], ...(fechamentoCrediario.length ? [['Crediário recebido no cartão', formatMoney(crediarioCartao.reduce((sum, row) => sum + row.valor, 0))]] : []), ['Recebimentos duplicados', counts.duplicates], ['Valor conciliado', formatMoney(matchedValue)], ['Valor divergente', formatMoney(divergentValue)], ['% conciliação', `${totalValue ? ((matchedValue / totalValue) * 100).toFixed(1) : '0.0'}%`]]
-  const tabs = [['resumo', 'Resumo'], ['pendencias', `Central de pendências (${pendingCases.length})`], ['conciliada', `Conciliadas (${counts.reconciled})`], ['divergencia', `Divergências (${counts.divergent})`], ['sem_recebimento', `Sem recebimento (${counts.missing})`], ['sem_venda', `Sem venda (${noSale.length})`], ...(fechamentoCrediario.length ? [['crediario_cartao', `Crediário cartão (${crediarioCartao.length})`]] : []), ...(counts.returns ? [['devolucao', `Devoluções (${counts.returns})`]] : [])]
+  const kpis = [['Total de vendas', counts.total], ['Vendas PIX', counts.pix], ['Vendas cartão', counts.card], ['Conciliadas', counts.reconciled], ['Não conciliadas', counts.missing], ...(counts.returnedReconciled ? [['Conciliadas por devolução', counts.returnedReconciled]] : []), ['PaggPix sem venda', counts.pixNoSale], ['Cielo sem venda', counts.cardNoSale], ...(fechamentoCrediario.length ? [['Crediário recebido no cartão', formatMoney(crediarioCartao.reduce((sum, row) => sum + row.valor, 0))]] : []), ['Recebimentos duplicados', counts.duplicates], ['Valor conciliado', formatMoney(matchedValue)], ['Valor divergente', formatMoney(divergentValue)], ['% conciliação', `${totalValue ? ((matchedValue / totalValue) * 100).toFixed(1) : '0.0'}%`]]
+  const tabs = [['resumo', 'Resumo'], ['pendencias', `Central de pendências (${pendingCases.length})`], ['conciliada', `Conciliadas (${counts.reconciled})`], ['divergencia', `Divergências (${counts.divergent})`], ['sem_recebimento', `Sem recebimento (${counts.missing})`], ['sem_venda', `Sem venda (${noSale.length})`], ...(fechamentoCrediario.length ? [['crediario_cartao', `Crediário cartão (${crediarioCartao.length})`]] : []), ...((counts.returns || counts.returnedReconciled) ? [['devolucao', `Devoluções (${counts.returns}${counts.returnedReconciled ? ` · ${counts.returnedReconciled} conciliada(s)` : ''})`]] : [])]
+
+  useEffect(() => {
+    if (output && resultDate !== 'all' && !availableDates.includes(resultDate)) setResultDate('all')
+  }, [output, resultDate, availableDates.join('|')])
 
   useEffect(() => {
     if (output && !tabs.some(([key]) => key === tab)) setTab('resumo')
@@ -1639,13 +1708,13 @@ export default function App() {
     <section className="no-print controls"><div className="controls-title"><span className="section-kicker">Etapa 2</span><strong>Defina as tolerâncias</strong></div><label>Tolerância de valor (R$)<input type="number" min="0" step="0.1" value={toleranceValue} onChange={(event) => setToleranceValue(event.target.value)} /></label><label>Tolerância de horário (h)<input type="number" min="0" step="0.5" value={toleranceHours} onChange={(event) => setToleranceHours(event.target.value)} /></label><button className="primary-button" disabled={!canRun} onClick={runReconciliation}><span>Executar conciliação</span><b aria-hidden="true">→</b></button></section>
     <section className="discount-audit-controls no-print"><div className="discount-audit-heading"><span className="discount-audit-icon">%</span><div><span className="section-kicker">Auditoria da Trier</span><strong>Verificar vendas com desconto alto</strong><small>Escolha um limite por percentual ou por valor. Devoluções não entram nessa análise.</small></div></div><div className="discount-audit-form"><div className="discount-mode-toggle" role="group" aria-label="Tipo do limite de desconto"><button type="button" className={discountMode === 'percent' ? 'active' : ''} aria-pressed={discountMode === 'percent'} onClick={() => setDiscountMode('percent')}>% Percentual</button><button type="button" className={discountMode === 'value' ? 'active' : ''} aria-pressed={discountMode === 'value'} onClick={() => setDiscountMode('value')}>R$ Valor</button></div><label>{discountMode === 'percent' ? 'Desconto mínimo (%)' : 'Desconto mínimo (R$)'}<input type="number" min="0" step={discountMode === 'percent' ? '0.1' : '0.01'} value={discountMode === 'percent' ? discountPercentThreshold : discountValueThreshold} onChange={(event) => discountMode === 'percent' ? setDiscountPercentThreshold(event.target.value) : setDiscountValueThreshold(event.target.value)} /></label><button type="button" className="discount-audit-button" disabled={!files.trier} onClick={runDiscountAudit}>Verificar descontos altos <b aria-hidden="true">→</b></button></div></section>
     {discountAudit && <section className="discount-audit-results"><div className="discount-results-heading"><div><span className="section-kicker">Resultado da auditoria</span><h2>Descontos altos</h2><p>Limite aplicado: <b>{discountAudit.mode === 'percent' ? `${discountAudit.threshold.toFixed(2).replace('.', ',')}%` : formatMoney(discountAudit.threshold)}</b>. A lista está ordenada do maior desconto para o menor.</p></div><button type="button" className="discount-close no-print" onClick={() => setDiscountAudit(null)}>Fechar análise</button></div><div className="discount-kpis"><article><small>Vendas encontradas</small><strong>{highDiscountRows.length}</strong></article><article><small>Total concedido</small><strong>{formatMoney(highDiscountTotal)}</strong></article><article><small>Maior percentual</small><strong>{highDiscountMaxPercent.toFixed(2).replace('.', ',')}%</strong></article></div>{highDiscountRows.length ? <DiscountAuditTable rows={highDiscountRows} staff={staff} /> : <div className="discount-empty"><span>✓</span><div><b>Nenhuma venda ultrapassou esse limite.</b><small>Você pode reduzir o percentual ou o valor e verificar novamente.</small></div></div>}</section>}
-    {output && <section className="results-section"><div className="results-heading"><span className="section-kicker">Etapa 3</span><h2>Resultado da conciliação</h2><p>Revise os indicadores e filtre cada coluna para investigar os registros.</p></div><div className="kpi-grid">{kpis.map(([label, value]) => <div className="kpi" key={label}><div>{label}</div><strong>{value}</strong></div>)}</div>
-      <div className="no-print tabs"><div className="tab-list">{tabs.map(([key, label]) => <button key={key} className={tab === key ? 'tab active' : 'tab'} onClick={() => setTab(key)}>{label}</button>)}</div><div className="export-list"><button onClick={() => downloadCsv(output, analystMarkers, staff)}>⇩ CSV</button><button onClick={() => downloadExcel(output, analystMarkers, staff)}>⇩ Excel</button><button onClick={() => window.print()}>⇩ PDF</button></div></div>
-      {tab === 'resumo' && <div className="summary-card">Das <b>{counts.total}</b> vendas eletrônicas da Relação de Vendas, <b className="text-green">{counts.reconciled}</b> foram conciliadas, <b className="text-amber">{counts.divergent}</b> tiveram divergência de valor dentro da tolerância e <b className="text-rust">{counts.missing}</b> não encontraram recebimento correspondente.{noSale.length > 0 && <><br /><br />Também foram encontrados <b className="text-rust">{noSale.length}</b> recebimentos sem venda correspondente, sendo <b>{counts.duplicates}</b> identificados como possível duplicidade.</>}{crediarioCartao.length > 0 && <><br /><br /><b className="text-green">{crediarioCartao.length}</b> recebimento(s) da Cielo, somando <b>{formatMoney(crediarioCartao.reduce((sum, row) => sum + row.valor, 0))}</b>, foram identificados como <b>Contas Recebidas Crediário (Cartão)</b> pelo Fechamento de Caixa.</>}{counts.returns > 0 && <><br /><br /><b>{counts.returns}</b> linha(s) de devolução não entraram na conciliação, pois não representam recebimento a buscar.</>}<br /><br />Use as abas para revisar cada grupo ou exporte a tabela final em Excel, CSV ou PDF.</div>}
+    {output && <section className="results-section"><div className="results-heading"><span className="section-kicker">Etapa 3</span><h2>Resultado da conciliação</h2><p>Revise os indicadores e filtre cada coluna para investigar os registros.</p></div><div className="result-date-filter no-print"><div><span>Data da análise</span><strong>{resultDate === 'all' ? 'Todas as datas importadas' : resultDate}</strong></div><label>Selecionar data<select value={resultDate} onChange={(event) => setResultDate(event.target.value)}><option value="all">Todas as datas</option>{availableDates.map((date) => <option value={date} key={date}>{date}</option>)}</select></label>{resultDate !== 'all' && <button type="button" onClick={() => setResultDate('all')}>Limpar filtro</button>}</div><div className="kpi-grid">{kpis.map(([label, value]) => <div className="kpi" key={label}><div>{label}</div><strong>{value}</strong></div>)}</div>
+      <div className="no-print tabs"><div className="tab-list">{tabs.map(([key, label]) => <button key={key} className={tab === key ? 'tab active' : 'tab'} onClick={() => setTab(key)}>{label}</button>)}</div><div className="export-list"><button onClick={() => downloadCsv(visibleOutput, analystMarkers, staff)}>⇩ CSV</button><button onClick={() => downloadExcel(visibleOutput, analystMarkers, staff)}>⇩ Excel</button><button onClick={() => window.print()}>⇩ PDF</button></div></div>
+      {tab === 'resumo' && <div className="summary-card">Das <b>{counts.total}</b> vendas eletrônicas da Relação de Vendas, <b className="text-green">{counts.reconciled}</b> foram conciliadas, <b className="text-amber">{counts.divergent}</b> tiveram divergência de valor dentro da tolerância e <b className="text-rust">{counts.missing}</b> não encontraram recebimento correspondente.{counts.returnedReconciled > 0 && <><br /><br /><b className="text-green">{counts.returnedReconciled}</b> venda(s) foram confirmadas manualmente como devolvidas e saíram de “Sem recebimento”.</>}{noSale.length > 0 && <><br /><br />Também foram encontrados <b className="text-rust">{noSale.length}</b> recebimentos sem venda correspondente, sendo <b>{counts.duplicates}</b> identificados como possível duplicidade.</>}{crediarioCartao.length > 0 && <><br /><br /><b className="text-green">{crediarioCartao.length}</b> recebimento(s) da Cielo, somando <b>{formatMoney(crediarioCartao.reduce((sum, row) => sum + row.valor, 0))}</b>, foram identificados como <b>Contas Recebidas Crediário (Cartão)</b> pelo Fechamento de Caixa.</>}{counts.returns > 0 && <><br /><br /><b>{counts.returns}</b> linha(s) de devolução foram identificadas no relatório Trier.</>}<br /><br />Use as abas para revisar cada grupo ou exporte a tabela final em Excel, CSV ou PDF.</div>}
       {tab === 'pendencias' && <PendingCenter cases={pendingCases} history={reconciliationHistory} staff={staff} splitSuggestionMinutes={splitSuggestionMinutes} onSimulateSplitPayments={simulateSplitPayments} onOpen={setInvestigatingCase} />}
-      {tab === 'conciliada' && <SalesTable key="conciliada" viewKey="conciliada" rows={results.filter((row) => row.status === 'CONCILIADA')} staff={staff} onUnconcile={handleUnconcile} />}{tab === 'divergencia' && <SalesTable key="divergencia" viewKey="divergencia" rows={results.filter((row) => row.status === 'DIVERGENCIA')} staff={staff} onUnconcile={handleUnconcile} />}{tab === 'sem_recebimento' && <SalesTable key="sem_recebimento" viewKey="sem_recebimento" rows={results.filter((row) => row.status === 'SEM_RECEBIMENTO')} markers={analystMarkers} onSaveMarker={saveAnalystMarker} onRemoveMarker={removeAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_recebimento" staff={staff} onRestore={handleRestoreReconciliation} />}{tab === 'devolucao' && <SalesTable key="devolucao" viewKey="devolucao" rows={results.filter((row) => row.status === 'DEVOLUCAO')} staff={staff} />}{tab === 'sem_venda' && <NoSaleTable key="sem_venda" viewKey="sem_venda" rows={noSale} markers={analystMarkers} onSaveMarker={saveAnalystMarker} onRemoveMarker={removeAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_venda" staff={staff} onRestore={handleRestoreReconciliation} />}{tab === 'crediario_cartao' && <><ClosingCreditSummary groups={fechamentoCrediario} /><NoSaleTable key="crediario_cartao" viewKey="crediario_cartao" rows={crediarioCartao} staff={staff} /></>}
+      {tab === 'conciliada' && <SalesTable key="conciliada" viewKey="conciliada" rows={results.filter((row) => row.status === 'CONCILIADA')} staff={staff} onUnconcile={handleUnconcile} />}{tab === 'divergencia' && <SalesTable key="divergencia" viewKey="divergencia" rows={results.filter((row) => row.status === 'DIVERGENCIA')} staff={staff} onUnconcile={handleUnconcile} />}{tab === 'sem_recebimento' && <SalesTable key="sem_recebimento" viewKey="sem_recebimento" rows={results.filter((row) => row.status === 'SEM_RECEBIMENTO')} markers={analystMarkers} onSaveMarker={saveAnalystMarker} onRemoveMarker={removeAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_recebimento" staff={staff} onRestore={handleRestoreReconciliation} onConfirmReturn={handleConfirmReturn} />}{tab === 'devolucao' && <SalesTable key="devolucao" viewKey="devolucao" rows={results.filter((row) => ['DEVOLUCAO', 'DEVOLUCAO_CONCILIADA'].includes(row.status))} staff={staff} onRestoreReturn={handleRestoreReturn} />}{tab === 'sem_venda' && <NoSaleTable key="sem_venda" viewKey="sem_venda" rows={noSale} markers={analystMarkers} onSaveMarker={saveAnalystMarker} onRemoveMarker={removeAnalystMarker} onSetMarkers={setAnalystMarkerGroup} markerKind="sem_venda" staff={staff} onRestore={handleRestoreReconciliation} />}{tab === 'crediario_cartao' && <><ClosingCreditSummary groups={fechamentoCrediario} /><NoSaleTable key="crediario_cartao" viewKey="crediario_cartao" rows={crediarioCartao} staff={staff} /></>}
     </section>}
-    {investigatingCase && <InvestigationModal entry={investigatingCase} files={files} results={results} noSale={noSale} manualReceipts={manualReceipts} toleranceHours={toleranceHours} history={reconciliationHistory} staff={staff} onClose={() => setInvestigatingCase(null)} onMatch={handleManualMatch} onUnconcile={handleUnconcile} onRestore={handleRestoreReconciliation} onAddNote={handleInvestigationNote} />}
+    {investigatingCase && <InvestigationModal entry={investigatingCase} files={files} results={results} noSale={noSale} manualReceipts={manualReceipts} toleranceHours={toleranceHours} history={reconciliationHistory} staff={staff} onClose={() => setInvestigatingCase(null)} onMatch={handleManualMatch} onUnconcile={handleUnconcile} onRestore={handleRestoreReconciliation} onConfirmReturn={handleConfirmReturn} onAddNote={handleInvestigationNote} />}
     <footer className="app-footer"><img src={assetPath('drogaria-center-logo.png')} alt="Drogaria Center" /><span>Conciliação segura, simples e local.</span></footer>
   </div></main>
 }

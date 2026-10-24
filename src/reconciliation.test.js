@@ -313,6 +313,23 @@ test('não sugere devolução quando colaborador, data ou valor são diferentes'
   assert.equal(sale.returnSuggestion, undefined)
 })
 
+test('confirma manualmente a devolução e remove a venda de sem recebimento', () => {
+  const trier = parseTrierLines([
+    '287120 1 CARTAO 05/10/26 09:15 65 97020 16 50,00 0,00 0,00 50,00 50,00',
+    '287121 1 CARTAO * Dev 05/10/26 10:05 55 97021 16 -50,00 0,00 0,00 -50,00 -50,00',
+  ])
+  const saleKey = reconciliationSaleKey(trier[0])
+  const returnSaleKey = reconciliationSaleKey(trier[1])
+  const returnMatches = { [saleKey]: { saleKey, returnSaleKey } }
+  const output = reconcile({ trier: { rows: trier }, pagpix: { rows: [] }, cielo: { rows: [] }, fechamento: { rows: [] } }, 0.5, 2, {}, {}, {}, 15, returnMatches)
+  const sale = output.results.find((row) => row.sale.numero === '287120')
+
+  assert.equal(sale.status, 'DEVOLUCAO_CONCILIADA')
+  assert.equal(sale.returnMatch, true)
+  assert.equal(sale.returnedSale.numero, '287121')
+  assert.equal(output.results.filter((row) => row.status === 'SEM_RECEBIMENTO').length, 0)
+})
+
 test('conciliação manual junta as vendas 286626 e 286633 em um recebimento maior', () => {
   const trier = parseTrierLines([
     '286626 1 CARTAO 03/10/26 09:16 65 96015 3 171,93 12,76 -21,93 150,00 150,00',

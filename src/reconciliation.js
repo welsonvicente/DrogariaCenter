@@ -20,6 +20,7 @@ export const STATUS_LABEL = {
   CREDIARIO_CARTAO: 'Crediário recebido no cartão',
   DUPLICADO: 'Duplicado',
   DEVOLUCAO: 'Devolução',
+  DEVOLUCAO_CONCILIADA: 'Conciliada por devolução',
 }
 
 const DATE_RE = /(\d{2}\/\d{2}\/\d{2,4})/
@@ -519,7 +520,7 @@ function findClosingReceiptSubset(receipts, target, toleranceValue) {
   return best?.items ?? []
 }
 
-export function reconcile(files, toleranceValue, toleranceHours, manualUnmatches = {}, manualMatches = {}, manualReceipts = {}, splitSuggestionMinutes = 15) {
+export function reconcile(files, toleranceValue, toleranceHours, manualUnmatches = {}, manualMatches = {}, manualReceipts = {}, splitSuggestionMinutes = 15, returnMatches = {}) {
   const trier = files.trier.rows
     .filter((row) => row.valor !== null && row.data)
     .map((row) => ({ ...row, dt: parseDataHora(row.data, row.hora), min: timeToMinutes(row.hora) }))
@@ -563,9 +564,28 @@ export function reconcile(files, toleranceValue, toleranceHours, manualUnmatches
   const manualBySale = new Map(manualPairs.map((pair) => [pair.saleKey, pair]))
   const manualByReceipt = new Map(manualPairs.flatMap((pair) => pairReceiptKeys(pair).map((key) => [key, pair])))
   const blockedReceipts = new Set(manualByReceipt.keys())
+  const trierByKey = new Map(trier.map((sale) => [reconciliationSaleKey(sale), sale]))
+  const confirmedReturnBySale = new Map(Object.values(returnMatches ?? {})
+    .filter((pair) => pair?.saleKey && pair?.returnSaleKey)
+    .map((pair) => [pair.saleKey, pair]))
 
   trier.forEach((sale) => {
     if (sale.isDev) results.push({ sale, status: 'DEVOLUCAO', fonte: null, motivo: 'Linha de devolução — não é recebimento a conciliar' })
+    else if (confirmedReturnBySale.has(reconciliationSaleKey(sale))) {
+      const returnPair = confirmedReturnBySale.get(reconciliationSaleKey(sale))
+      const returnedSale = trierByKey.get(returnPair.returnSaleKey)
+      if (returnedSale?.isDev) results.push({
+        sale,
+        status: 'DEVOLUCAO_CONCILIADA',
+        fonte: 'Devolução Trier',
+        returnedSale,
+        returnMatch: true,
+        returnMatchSaleKey: returnPair.saleKey,
+        returnMatchReturnSaleKey: returnPair.returnSaleKey,
+        motivo: `Venda vinculada manualmente à devolução ${returnedSale.numero}`,
+      })
+      else pending.push(sale)
+    }
     else if (['DINHEIRO', 'CREDIARIO', 'CHEQUE'].includes(sale.forma)) results.push({ sale, status: 'CONCILIADA', fonte: null, motivo: 'Meio de pagamento não eletrônico' })
     else pending.push(sale)
   })
