@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { findHighDiscountSales, parseCieloLines, parseFechamentoLines, parseTrierLines, receiptsForManualReview, reconcile, reconciliationReceiptKey, reconciliationSaleKey, resolveOperator } from './reconciliation.js'
+import { findHighDiscountSales, parseCieloLines, parseFechamentoLines, parseStoneLines, parseTrierLines, receiptsForManualReview, reconcile, reconciliationReceiptKey, reconciliationSaleKey, resolveOperator } from './reconciliation.js'
 
 const sampleLines = [
   '268648 1 CARTAO 30/07/26 07:20 65 83509 8 49,99 10,00 -5,00 44,99 44,99',
@@ -55,6 +55,21 @@ test('cadastro identifica novo vendedor pelo número da Trier e pelo nome do Pag
   assert.equal(resolveOperator(pagpix, 'PaggPix', staff)?.id, 'joao')
 })
 
+test('identifica a equipe atual pelo código Trier e por diferentes nomes no PaggPix', () => {
+  const staff = [
+    { id: 'trier-1', name: 'WELSON VICENTE DA SILVA', trierCode: '1', pagpixAliases: ['WELSON', 'VICENTE', 'WELSON VICENTE'], active: true },
+    { id: 'trier-12', name: 'JOAO VICTOR DORNELAS DE ARAUJO', trierCode: '12', pagpixAliases: ['JOAO', 'VICTOR', 'JOAO VICTOR'], active: true },
+    { id: 'trier-20', name: 'EWERTON GABRIEL BENTO RUFINO FERREIRA', trierCode: '20', pagpixAliases: ['EWERTON', 'GABRIEL', 'EWERTON GABRIEL'], active: true },
+  ]
+
+  assert.equal(resolveOperator({ operador: '1' }, 'Trier', staff)?.id, 'trier-1')
+  assert.equal(resolveOperator({ operador: '12' }, 'Trier', staff)?.id, 'trier-12')
+  assert.equal(resolveOperator({ operador: '20' }, 'Trier', staff)?.id, 'trier-20')
+  assert.equal(resolveOperator({ operadorOriginal: 'Operador VICTOR' }, 'PaggPix', staff)?.id, 'trier-12')
+  assert.equal(resolveOperator({ operadorOriginal: 'Atendente GABRIEL' }, 'PaggPix', staff)?.id, 'trier-20')
+  assert.equal(resolveOperator({ operadorOriginal: 'Caixa WELSON' }, 'PaggPix', staff)?.id, 'trier-1')
+})
+
 test('concilia PIX do mesmo vendedor quando Trier e PaggPix divergem entre Delivery e Balcão', () => {
   const trier = parseTrierLines([
     '286363 1 PIX Sim 02/10/26 09:57 65 95778 DELIVERY 8 41,99 16,67 -7,00 34,99 34,99',
@@ -70,6 +85,143 @@ test('concilia PIX do mesmo vendedor quando Trier e PaggPix divergem entre Deliv
   assert.equal(result.canalRecebimento, 'Balcao')
   assert.equal(result.canalDivergente, true)
   assert.match(result.motivo, /Canal divergente/)
+  assert.equal(output.semVenda.length, 0)
+})
+
+test('extrai repasse PaggPix e PIX direto do extrato Stone', () => {
+  const rows = parseStoneLines([
+    'PAGGPIX GESTAO DE RECEBIVEIS EFÍ S.A. - INSTITUIÇÃO DE',
+    '30/10/26 Entrada R$ 49,75 R$ 20.000,00',
+    'Transferência | Pix PAGAMENTO',
+    'CRISTINA COELHO DA SILVA',
+    '30/10/26 Entrada ALBERTINS R$ 25,00 R$ 20.025,00 Banco Bradesco S.A.',
+    'Transferência | Pix',
+  ])
+
+  assert.equal(rows.length, 2)
+  assert.deepEqual(rows[0], {
+    data: '30/10/2026',
+    hora: '',
+    status: 'PAGO',
+    forma: 'PIX',
+    fonte: 'Stone',
+    tipo: 'PaggPix',
+    origemStone: 'PaggPix',
+    contraparte: 'PAGGPIX GESTAO DE RECEBIVEIS',
+    valor: 50,
+    valorCreditado: 49.75,
+    tarifaEstimada: 0.25,
+    semHorario: true,
+    raw: 'PAGGPIX GESTAO DE RECEBIVEIS EFÍ S.A. - INSTITUIÇÃO DE 30/10/26 Entrada R$ 49,75 R$ 20.000,00 Transferência | Pix PAGAMENTO',
+  })
+  assert.equal(rows[1].tipo, 'PIX direto')
+  assert.equal(rows[1].contraparte, 'CRISTINA COELHO DA SILVA ALBERTINS')
+  assert.equal(rows[1].valor, 25)
+  assert.equal(rows[1].valorCreditado, 25)
+  assert.equal(rows[1].tarifaEstimada, 0)
+})
+
+test('concilia venda PIX com crédito líquido PaggPix confirmado no Stone', () => {
+  const trier = parseTrierLines(['290001 1 PIX 30/10/26 18:45 65 98001 8 50,00 0,00 0,00 50,00 50,00'])
+  const stone = parseStoneLines([
+    'PAGGPIX GESTAO DE RECEBIVEIS EFÍ S.A. - INSTITUIÇÃO DE',
+    '30/10/26 Entrada R$ 49,75 R$ 20.000,00',
+    'Transferência | Pix PAGAMENTO',
+  ])
+  const output = reconcile({ trier: { rows: trier }, pagpix: { rows: stone }, cielo: { rows: [] }, fechamento: { rows: [] } }, 0.5, 2)
+  const result = output.results[0]
+
+  assert.equal(result.status, 'CONCILIADA')
+  assert.equal(result.fonte, 'Stone')
+  assert.equal(result.recebimento.valor, 50)
+  assert.equal(result.recebimento.valorCreditado, 49.75)
+  assert.match(result.motivo, /valor bruto reconstruído/)
+  assert.match(result.motivo, /não informa horário/)
+  assert.equal(output.semVenda.length, 0)
+})
+
+test('concilia PIX direto no CNPJ sem descontar tarifa no extrato Stone', () => {
+  const trier = parseTrierLines(['290002 1 PIX 30/10/26 10:30 65 98002 8 25,00 0,00 0,00 25,00 25,00'])
+  const stone = parseStoneLines([
+    'CRISTINA COELHO DA SILVA',
+    '30/10/26 Entrada ALBERTINS R$ 25,00 R$ 20.025,00 Banco Bradesco S.A.',
+    'Transferência | Pix',
+  ])
+  const output = reconcile({ trier: { rows: trier }, pagpix: { rows: stone }, cielo: { rows: [] }, fechamento: { rows: [] } }, 0.5, 2)
+  const result = output.results[0]
+
+  assert.equal(result.status, 'CONCILIADA')
+  assert.equal(result.fonte, 'Stone')
+  assert.equal(result.recebimento.contraparte, 'CRISTINA COELHO DA SILVA ALBERTINS')
+  assert.match(result.motivo, /PIX direto/)
+})
+
+test('identifica duas formas de pagamento no relatório detalhado da Trier', () => {
+  const sales = parseTrierLines([
+    '293778 1 CARTAO * 30/10/2026 10:18:23 0 65 102150 0 0 8 123,45 1,98 -2,45 121,00 121,00',
+    'CARTAO 28,00 PIX 0',
+    'CARTAO 93,00 TODOS OS CARTOES 0',
+    'Código Descrição Produto Quant. Vlr.Unit % Desc Total Item Promoção Vend.',
+  ])
+  const sale = sales[0]
+
+  assert.equal(sale.numero, '293778')
+  assert.equal(sale.splitPayment, true)
+  assert.equal(sale.paymentBreakdownTotal, 121)
+  assert.deepEqual(sale.paymentBreakdown.map(({ forma, valor }) => ({ forma, valor })), [
+    { forma: 'PIX', valor: 28 },
+    { forma: 'CARTAO', valor: 93 },
+  ])
+})
+
+test('concilia automaticamente PIX e cartão da venda detalhada 293778', () => {
+  const trier = parseTrierLines([
+    '293778 1 CARTAO * 30/10/2026 10:18:23 0 65 102150 0 0 8 123,45 1,98 -2,45 121,00 121,00',
+    'CARTAO 28,00 PIX 0',
+    'CARTAO 93,00 TODOS OS CARTOES 0',
+    'Código Descrição Produto Quant. Vlr.Unit % Desc Total Item Promoção Vend.',
+  ])
+  const pagpix = [{ data: '30/10/2026', hora: '10:17:40', tipo: 'Balcao', operador: '8', status: 'PAGO', valor: 28, raw: 'PIX 28,00' }]
+  const cielo = parseCieloLines(['30/10/2026 10:18 Crédito à vista Visa R$ 93,00 Aprovada'])
+  const output = reconcile({ trier: { rows: trier }, pagpix: { rows: pagpix }, cielo: { rows: cielo }, fechamento: { rows: [] } }, 0.5, 2)
+  const result = output.results[0]
+
+  assert.equal(result.status, 'CONCILIADA')
+  assert.equal(result.splitPaymentDetected, true)
+  assert.equal(result.automaticSplitMatch, true)
+  assert.equal(result.recebimentos.length, 2)
+  assert.equal(result.recebimento.valor, 121)
+  assert.equal(result.diff, 0)
+  assert.match(result.motivo, /PIX R\$\s*28,00/)
+  assert.match(result.motivo, /Cartão R\$\s*93,00/)
+  assert.equal(output.semVenda.length, 0)
+})
+
+test('considera a parcela em dinheiro e busca somente o PIX do pagamento misto', () => {
+  const trier = parseTrierLines([
+    '293385 1 PIX 28/10/2026 17:45:00 0 65 101800 0 0 8 152,00 0,00 0,00 152,00 152,00',
+    '6 CARTAO 35,00 PIX 0',
+    '1 DINHEIRO 117,00 0',
+    'Código Descrição Produto Quant. Vlr.Unit % Desc Total Item Promoção Vend.',
+  ])
+  const pagpix = [{ data: '28/10/2026', hora: '17:44:30', tipo: 'Balcao', operador: '8', status: 'PAGO', valor: 35, raw: 'PIX 35,00' }]
+  const output = reconcile({ trier: { rows: trier }, pagpix: { rows: pagpix }, cielo: { rows: [] }, fechamento: { rows: [] } }, 0.5, 2)
+  const result = output.results[0]
+
+  assert.equal(result.status, 'CONCILIADA')
+  assert.equal(result.recebimentos.length, 1)
+  assert.equal(result.recebimento.valor, 152)
+  assert.equal(result.fonte, 'PaggPix + Dinheiro')
+  assert.equal(output.semVenda.length, 0)
+})
+
+test('não inclui venda exclusivamente em dinheiro na conciliação eletrônica', () => {
+  const trier = parseTrierLines([
+    '293900 1 DINHEIRO 30/10/26 11:00 65 99900 20 50,00 0,00 0,00 50,00 50,00',
+  ])
+  const output = reconcile({ trier: { rows: trier }, pagpix: { rows: [] }, cielo: { rows: [] }, fechamento: { rows: [] } }, 0.5, 2)
+
+  assert.equal(output.results.length, 0)
   assert.equal(output.semVenda.length, 0)
 })
 

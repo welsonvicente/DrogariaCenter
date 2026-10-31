@@ -1,4 +1,5 @@
 export const OPERADORES = {
+  1: 'WELSON VICENTE DA SILVA',
   3: 'Rinaldo Ramos da Silva',
   4: 'José Wesley de Souza Maranhão',
   8: 'Katia Rejane do Nascimento',
@@ -10,6 +11,7 @@ export const OPERADORES = {
   // não faz mais parte da equipe ativa exibida no cadastro.
   17: 'José Ramos da Silva Junior',
   19: 'Shakira Kessia Santana de Souza',
+  20: 'EWERTON GABRIEL BENTO RUFINO FERREIRA',
 }
 
 export const STATUS_LABEL = {
@@ -209,11 +211,58 @@ export function parseTrierLines(lines) {
     }
   }
 
+  const parsePaymentLine = (raw) => {
+    const line = raw.trim()
+    const monies = findAllMoney(line)
+    if (!monies.length) return null
+    const forma = /\bPIX\b/i.test(line) ? 'PIX'
+      : /\b(?:TODOS\s+OS\s+CART(?:OES|ÕES)|CARTAO|CARTÃO|VISA|MASTER(?:CARD)?|ELO|AMEX|HIPERCARD)\b/i.test(line) ? 'CARTAO'
+        : /\bDINHEIRO\b/i.test(line) ? 'DINHEIRO'
+          : /\b(?:CREDIARIO|CREDIÁRIO)\b/i.test(line) ? 'CREDIARIO'
+            : /\bCHEQUE\b/i.test(line) ? 'CHEQUE' : null
+    const valor = toNumber(monies[0])
+    if (!forma || !Number.isFinite(valor) || valor <= 0) return null
+    return { forma, valor, raw: line }
+  }
+
+  const finalizePayments = (sales) => sales.map((sale) => {
+    const payments = sale.paymentBreakdown ?? []
+    const total = +payments.reduce((sum, payment) => sum + payment.valor, 0).toFixed(2)
+    const matchesTotal = payments.length > 0 && Math.abs(total - Math.abs(Number(sale.valor || 0))) <= 0.05
+    const validPayments = matchesTotal ? payments : []
+    const paymentForms = [...new Set(validPayments.map((payment) => payment.forma))]
+    return {
+      ...sale,
+      paymentBreakdown: validPayments,
+      paymentForms,
+      paymentBreakdownTotal: matchesTotal ? total : null,
+      splitPayment: paymentForms.length > 1,
+    }
+  })
+
   // A word boundary prevents the blob strategy from splitting inside a six-digit
   // sale number (for example, treating "268648" as "8648").
   const start = new RegExp(`(?=\\b\\d{4,8}\\s+\\d{0,3}\\s*(?:${formas})\\b)`)
-  const fromBlob = lines.join(' ').split(start).map((chunk) => parseChunk(chunk.trim())).filter(Boolean)
-  const fromLines = lines.map((line) => parseChunk(line.trim())).filter(Boolean)
+  const fromBlob = finalizePayments(lines.join(' ').split(start).map((chunk) => parseChunk(chunk.trim())).filter(Boolean))
+  const lineSales = []
+  let currentSale = null
+  lines.forEach((raw) => {
+    const line = raw.trim()
+    const sale = parseChunk(line)
+    if (sale) {
+      currentSale = { ...sale, paymentBreakdown: [] }
+      lineSales.push(currentSale)
+      return
+    }
+    if (!currentSale) return
+    if (/^C[oó]digo\s+Descri[cç][aã]o\s+Produto/i.test(line) || /^P[aá]gina\s+\d+/i.test(line)) {
+      currentSale = null
+      return
+    }
+    const payment = parsePaymentLine(line)
+    if (payment) currentSale.paymentBreakdown.push(payment)
+  })
+  const fromLines = finalizePayments(lineSales)
   // Prefer the reconstructed page rows whenever they cover the same report.
   // The blob includes repeated page headings such as "Vend. Dev.", which can
   // incorrectly mark the first sale on a page as a return.
@@ -326,6 +375,80 @@ export function parsePagPixLines(lines) {
     const tipo = /\bdelivery\b/i.test(line) ? 'Delivery' : /\bbalc[aã]o\b/i.test(line) ? 'Balcao' : null
     return [{ data: date[1], hora: date[2], operador: findOperadorCode(line), operadorOriginal: '', tipo, status, valor: toNumber(money[1]), raw: line }]
   })
+}
+
+function normalizeStoneDate(value) {
+  const match = String(value ?? '').match(/^(\d{2})\/(\d{2})\/(\d{2}|\d{4})$/)
+  if (!match) return String(value ?? '')
+  const year = match[3].length === 2 ? `20${match[3]}` : match[3]
+  return `${match[1]}/${match[2]}/${year}`
+}
+
+function estimateStonePaggPixGross(netValue) {
+  // O extrato Stone registra o repasse da PaggPix já descontado em 0,5%.
+  // Reconstituir o bruto permite comparar com o valor lançado na Trier, mas o
+  // crédito bancário original continua preservado em valorCreditado.
+  return +(Number(netValue || 0) / 0.995).toFixed(2)
+}
+
+export function parseStoneLines(lines) {
+  const rows = []
+  const transactionLine = /^(\d{2}\/\d{2}\/\d{2,4})\s+Entrada\b/i
+  const previousBoundary = /^(?:DATA\s+TIPO|Per[ií]odo:|P[aá]gina\s+\d+|Extrato de conta corrente|Transfer[eê]ncia\s*\|\s*Pix)/i
+  const institutionText = /\b(?:NU\s+PAGAMENTOS|BANCO|PAGAMENTOS?|INSTITUI[CÇ][AÃ]O|RECARGAPAY|STONE|CAIXA\s+ECONOMICA|EF[IÍ]\s+S\.?A\.?)\b/i
+
+  lines.forEach((raw, index) => {
+    const line = raw.trim()
+    const date = line.match(transactionLine)
+    if (!date) return
+
+    const nextLines = lines.slice(index + 1, index + 5)
+    if (!nextLines.some((item) => /Transfer[eê]ncia\s*\|\s*Pix/i.test(item))) return
+
+    const monies = findAllMoney(line)
+    if (monies.length < 2) return
+    const valorCreditado = toNumber(monies[0])
+    if (!Number.isFinite(valorCreditado) || valorCreditado <= 0) return
+
+    const descriptorLines = []
+    for (let cursor = index - 1; cursor >= Math.max(0, index - 4); cursor -= 1) {
+      const descriptor = lines[cursor].trim()
+      if (!descriptor || previousBoundary.test(descriptor) || transactionLine.test(descriptor)) break
+      descriptorLines.unshift(descriptor)
+    }
+    const entryIndex = line.search(/Entrada/i)
+    const moneyIndex = line.indexOf('R$', entryIndex)
+    const inlineDescriptor = entryIndex >= 0 && moneyIndex > entryIndex ? line.slice(entryIndex + 'Entrada'.length, moneyIndex).trim() : ''
+    const descriptorText = [...descriptorLines, inlineDescriptor].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
+    const isPaggPix = /\bPAGGPIX\b/i.test(descriptorText)
+    const nameParts = [...descriptorLines, inlineDescriptor]
+      .map((part) => {
+        const cleanPart = part.trim()
+        const institutionIndex = cleanPart.search(institutionText)
+        return (institutionIndex >= 0 ? cleanPart.slice(0, institutionIndex) : cleanPart).trim()
+      })
+      .filter((part) => part && !/\bPAGGPIX\b/i.test(part))
+    const contraparte = isPaggPix ? 'PAGGPIX GESTAO DE RECEBIVEIS' : nameParts.join(' ').replace(/\s+/g, ' ').trim() || 'PIX direto não identificado'
+    const valor = isPaggPix ? estimateStonePaggPixGross(valorCreditado) : valorCreditado
+
+    rows.push({
+      data: normalizeStoneDate(date[1]),
+      hora: '',
+      status: 'PAGO',
+      forma: 'PIX',
+      fonte: 'Stone',
+      tipo: isPaggPix ? 'PaggPix' : 'PIX direto',
+      origemStone: isPaggPix ? 'PaggPix' : 'Pix direto',
+      contraparte,
+      valor,
+      valorCreditado,
+      tarifaEstimada: isPaggPix ? +(valor - valorCreditado).toFixed(2) : 0,
+      semHorario: true,
+      raw: [...descriptorLines, line, ...nextLines.slice(0, nextLines.findIndex((item) => /Transfer[eê]ncia\s*\|\s*Pix/i.test(item)) + 1)].join(' ').replace(/\s+/g, ' ').trim(),
+    })
+  })
+
+  return rows
 }
 
 function normalizeSpreadsheetLabel(value) {
@@ -470,7 +593,7 @@ export function receiptsForManualReview(files, sale) {
   if (!sale) return []
   const saleDate = manualReviewDateKey(sale.data)
   return [
-    ...(files.pagpix?.rows ?? []).map((item) => ({ ...item, fonte: 'PaggPix', forma: 'PIX' })),
+    ...(files.pagpix?.rows ?? []).map((item) => ({ ...item, fonte: item.fonte || 'PaggPix', forma: 'PIX' })),
     ...(files.cielo?.rows ?? []).map((item) => cieloReceiptIsPix(item)
       ? { ...item, fonte: 'Cielo', forma: 'PIX', tipo: item.tipo || 'PIX', bandeira: item.bandeira || 'PIX' }
       : { ...item, fonte: 'Cielo', forma: 'CARTAO' }),
@@ -533,7 +656,7 @@ export function reconcile(files, toleranceValue, toleranceHours, manualUnmatches
       return {
         ...row,
         ...(key === 'cielo' ? { forma: cieloPix ? 'PIX' : 'CARTAO', tipo: cieloPix ? 'PIX' : row.tipo, bandeira: cieloPix ? 'PIX' : row.bandeira } : {}),
-        dt: parseDataHora(row.data, row.hora), min: timeToMinutes(row.hora), used: false, fonte,
+        dt: parseDataHora(row.data, row.hora), min: timeToMinutes(row.hora), used: false, fonte: row.fonte || fonte,
       }
     })
   const pagpixPool = makePool('pagpix', 'PAGO', 'PaggPix')
@@ -571,7 +694,12 @@ export function reconcile(files, toleranceValue, toleranceHours, manualUnmatches
 
   trier.forEach((sale) => {
     if (sale.isDev) results.push({ sale, status: 'DEVOLUCAO', fonte: null, motivo: 'Linha de devolução — não é recebimento a conciliar' })
-    else if (confirmedReturnBySale.has(reconciliationSaleKey(sale))) {
+    else if (!['PIX', 'CARTAO'].includes(sale.forma) && !(sale.paymentBreakdown ?? []).some((payment) => ['PIX', 'CARTAO'].includes(payment.forma))) {
+      // A conciliação financeira procura somente pagamentos eletrônicos. Uma
+      // venda exclusivamente em dinheiro, cheque ou crediário não deve entrar
+      // nos totais, pendências ou indicadores de vendas conciliadas.
+      return
+    } else if (confirmedReturnBySale.has(reconciliationSaleKey(sale))) {
       const returnPair = confirmedReturnBySale.get(reconciliationSaleKey(sale))
       const returnedSale = trierByKey.get(returnPair.returnSaleKey)
       if (returnedSale?.isDev) results.push({
@@ -586,7 +714,6 @@ export function reconcile(files, toleranceValue, toleranceHours, manualUnmatches
       })
       else pending.push(sale)
     }
-    else if (['DINHEIRO', 'CREDIARIO', 'CHEQUE'].includes(sale.forma)) results.push({ sale, status: 'CONCILIADA', fonte: null, motivo: 'Meio de pagamento não eletrônico' })
     else pending.push(sale)
   })
   pending.sort((a, b) => a.min - b.min)
@@ -595,15 +722,16 @@ export function reconcile(files, toleranceValue, toleranceHours, manualUnmatches
     if (sale.forma === 'PIX') {
       const expectedType = sale.tele === 'Sim' ? 'Delivery' : 'Balcao'
       const available = pagpixPool.filter((item) => !item.used && !blockedReceipts.has(reconciliationReceiptKey(item)) && sameDay(item.dt, sale.dt))
-      const sameChannel = available.filter((item) => item.tipo === expectedType)
+      const stone = available.filter((item) => item.fonte === 'Stone')
+      const sameChannel = available.filter((item) => item.fonte !== 'Stone' && item.tipo === expectedType)
       // Algumas vendas são marcadas como Tele/Delivery na Trier, mas o QR Code
       // fica registrado como Balcão no PaggPix (ou o inverso). Nesse caso,
       // somente permita atravessar o canal quando o vendedor também coincidir.
       const sameSellerOtherChannel = sale.operador
-        ? available.filter((item) => item.tipo !== expectedType && item.operador && String(item.operador) === String(sale.operador))
+        ? available.filter((item) => item.fonte !== 'Stone' && item.tipo !== expectedType && item.operador && String(item.operador) === String(sale.operador))
         : []
       const cieloPix = cieloPool.filter((item) => item.forma === 'PIX' && !item.used && !item.reservedClosing && !blockedReceipts.has(reconciliationReceiptKey(item)) && sameDay(item.dt, sale.dt))
-      return { pool: [...sameChannel, ...sameSellerOtherChannel, ...cieloPix], fonte: 'PaggPix ou Cielo', expectedType }
+      return { pool: [...sameChannel, ...sameSellerOtherChannel, ...stone, ...cieloPix], fonte: 'PaggPix, Stone ou Cielo', expectedType }
     }
     if (sale.forma === 'CARTAO') return { pool: cieloPool.filter((item) => item.forma !== 'PIX' && !item.used && !item.reservedClosing && !blockedReceipts.has(reconciliationReceiptKey(item)) && sameDay(item.dt, sale.dt)), fonte: 'Cielo' }
     return { pool: [], fonte: null }
@@ -613,6 +741,11 @@ export function reconcile(files, toleranceValue, toleranceHours, manualUnmatches
     recebimento.used = true
     const diff = +(sale.valor - recebimento.valor).toFixed(2)
     const channelMismatch = fonte === 'PaggPix' && recebimento.tipo !== expectedType
+    const stoneReason = fonte === 'Stone'
+      ? recebimento.origemStone === 'PaggPix'
+        ? `Crédito PaggPix confirmado no extrato Stone; valor bruto reconstruído antes da tarifa estimada de ${formatMoney(recebimento.tarifaEstimada)}; o extrato não informa horário, canal ou operador`
+        : `PIX direto de ${recebimento.contraparte || 'pessoa não identificada'} confirmado no extrato Stone; o extrato não informa horário, canal ou operador`
+      : null
     return {
       sale,
       status: Math.abs(diff) < 0.005 ? 'CONCILIADA' : 'DIVERGENCIA',
@@ -623,7 +756,7 @@ export function reconcile(files, toleranceValue, toleranceHours, manualUnmatches
       canalTrier: fonte === 'PaggPix' ? expectedType : null,
       canalRecebimento: fonte === 'PaggPix' ? (recebimento.tipo || null) : null,
       canalDivergente: channelMismatch,
-      motivo: channelMismatch ? `Canal divergente: Trier ${expectedType}, PaggPix ${recebimento.tipo || 'não informado'}; vendedor correspondente` : null,
+      motivo: stoneReason || (channelMismatch ? `Canal divergente: Trier ${expectedType}, PaggPix ${recebimento.tipo || 'não informado'}; vendedor correspondente` : null),
     }
   }
 
@@ -637,18 +770,23 @@ export function reconcile(files, toleranceValue, toleranceHours, manualUnmatches
       receipts.forEach((item) => { item.used = true })
       const receivedValue = +receipts.reduce((sum, item) => sum + Number(item.valor || 0), 0).toFixed(2)
       const salesValue = +sales.reduce((sum, item) => sum + Number(item.valor || 0), 0).toFixed(2)
-      const sources = [...new Set(receipts.map((item) => item.fonte || 'Manual'))]
+      const internalPayments = sales.length === 1 && sales[0].splitPayment
+        ? (sales[0].paymentBreakdown ?? []).filter((payment) => !['PIX', 'CARTAO'].includes(payment.forma))
+        : []
+      const internalPaymentValue = +internalPayments.reduce((sum, payment) => sum + Number(payment.valor || 0), 0).toFixed(2)
+      const accountedValue = +(receivedValue + internalPaymentValue).toFixed(2)
+      const sources = [...new Set([...receipts.map((item) => item.fonte || 'Manual'), ...internalPayments.map((payment) => payment.forma === 'DINHEIRO' ? 'Dinheiro' : payment.forma)])]
       const types = [...new Set(receipts.map((item) => item.tipo || item.bandeira).filter(Boolean))]
-      const receipt = receipts.length === 1 ? receipts[0] : {
+      const receipt = receipts.length === 1 && !internalPaymentValue ? receipts[0] : {
         data: receipts[0]?.data || sales[0]?.data,
         hora: receipts.map((item) => item.hora).filter(Boolean).join(' + '),
-        valor: receivedValue,
-        tipo: types.join(' + ') || 'Pagamento dividido',
+        valor: accountedValue,
+        tipo: sales[0]?.splitPayment ? paymentBreakdownText(sales[0]) : types.join(' + ') || 'Pagamento dividido',
         fonte: 'Múltiplos',
         raw: receipts.map((item) => item.raw || `${item.fonte} ${item.tipo || ''} ${item.valor}`).join(' | '),
       }
-      const diff = +(salesValue - receivedValue).toFixed(2)
-      const fonte = sources.length === 1 ? sources[0] : 'Múltiplos'
+      const diff = +(salesValue - accountedValue).toFixed(2)
+      const fonte = sales.length === 1 && sales[0].splitPayment ? sources.join(' + ') : sources.length === 1 ? sources[0] : 'Múltiplos'
       const groupId = pair.groupId || `manual-group-${pairIndex}-${saleKeys.join(':')}`
       sales.forEach((sale) => {
         resolved.set(sale.numero, {
@@ -666,10 +804,13 @@ export function reconcile(files, toleranceValue, toleranceHours, manualUnmatches
           manualMatchReceiptKeys: receiptKeys,
           groupSales: sales,
           groupSalesValue: salesValue,
-          groupReceivedValue: receivedValue,
+          groupReceivedValue: accountedValue,
+          splitPaymentDetected: Boolean(sale.splitPayment),
           motivo: sales.length > 1
             ? `Conciliação manual em grupo: ${sales.length} vendas somando ${salesValue.toFixed(2)} com ${receipts.length} recebimento(s) somando ${receivedValue.toFixed(2)}`
-            : receipts.length > 1
+            : sale.splitPayment
+              ? `Pagamento misto confirmado manualmente: ${paymentBreakdownText(sale)}`
+              : receipts.length > 1
               ? `Conciliação manual com ${receipts.length} recebimentos (${types.join(' + ') || 'pagamento dividido'})`
               : `Conciliação confirmada manualmente pelo analista${fonte === 'Manual' ? ' com forma de pagamento informada' : ''}`,
         })
@@ -691,7 +832,7 @@ export function reconcile(files, toleranceValue, toleranceHours, manualUnmatches
         const valueDifference = Math.abs(receipt.valor - sale.valor)
         const timeDifferenceMinutes = Math.abs(receipt.min - sale.min)
         if (valueDifference > toleranceValue) return
-        if (requireTime && timeDifferenceMinutes > toleranceHours * 60) return
+        if (requireTime && !receipt.semHorario && timeDifferenceMinutes > toleranceHours * 60) return
         if (!receiptIndexes.has(receipt)) {
           receiptIndexes.set(receipt, receipts.length)
           receipts.push(receipt)
@@ -767,9 +908,75 @@ export function reconcile(files, toleranceValue, toleranceHours, manualUnmatches
       .map((edge) => edge.candidate))
   }
 
+  const paymentBreakdownText = (sale) => (sale.paymentBreakdown ?? [])
+    .map((payment) => `${payment.forma === 'CARTAO' ? 'Cartão' : payment.forma === 'PIX' ? 'PIX' : payment.forma.charAt(0) + payment.forma.slice(1).toLowerCase()} ${formatMoney(payment.valor)}`)
+    .join(' + ')
+
+  const resolveDetailedSplitPayments = (resolved) => {
+    const splitSales = pending.filter((sale) => sale.splitPayment && !resolved.has(sale.numero) && !manualBySale.has(reconciliationSaleKey(sale)))
+    const virtualParts = splitSales.flatMap((sale) => (sale.paymentBreakdown ?? [])
+      .map((payment, splitPartIndex) => ({ payment, splitPartIndex }))
+      .filter(({ payment }) => ['PIX', 'CARTAO'].includes(payment.forma))
+      .map(({ payment, splitPartIndex }) => ({
+        ...sale,
+        numero: `${sale.numero}#${splitPartIndex}`,
+        forma: payment.forma,
+        valor: payment.valor,
+        splitParentNumber: sale.numero,
+        splitPartIndex,
+      })))
+    const matches = assignGlobally(virtualParts, false)
+    const matchesBySale = new Map()
+    matches.forEach((match) => {
+      const list = matchesBySale.get(match.sale.splitParentNumber) ?? []
+      list.push(match)
+      matchesBySale.set(match.sale.splitParentNumber, list)
+    })
+
+    splitSales.forEach((sale) => {
+      const electronicParts = (sale.paymentBreakdown ?? []).filter((payment) => ['PIX', 'CARTAO'].includes(payment.forma))
+      const nonElectronicParts = (sale.paymentBreakdown ?? []).filter((payment) => !['PIX', 'CARTAO'].includes(payment.forma))
+      const saleMatches = matchesBySale.get(sale.numero) ?? []
+      if (saleMatches.length !== electronicParts.length) return
+
+      const receipts = saleMatches.map((match) => match.receipt)
+      receipts.forEach((receipt) => { receipt.used = true })
+      const externalReceived = receipts.reduce((sum, receipt) => sum + Number(receipt.valor || 0), 0)
+      const internallyPaid = nonElectronicParts.reduce((sum, payment) => sum + Number(payment.valor || 0), 0)
+      const accountedValue = +(externalReceived + internallyPaid).toFixed(2)
+      const diff = +(Number(sale.valor || 0) - accountedValue).toFixed(2)
+      const sources = [...new Set([
+        ...receipts.map((receipt) => receipt.fonte || 'Recebimento'),
+        ...nonElectronicParts.map((payment) => payment.forma === 'DINHEIRO' ? 'Dinheiro' : payment.forma),
+      ])]
+      const sourceLabel = sources.join(' + ') || 'Pagamento misto'
+      const receipt = {
+        data: sale.data,
+        hora: receipts.map((item) => item.hora).filter(Boolean).join(' + '),
+        valor: accountedValue,
+        forma: 'MISTO',
+        tipo: paymentBreakdownText(sale),
+        fonte: sourceLabel,
+        raw: receipts.map((item) => item.raw || `${item.fonte} ${item.valor}`).join(' | '),
+      }
+      resolved.set(sale.numero, {
+        sale,
+        status: Math.abs(diff) < 0.005 ? 'CONCILIADA' : 'DIVERGENCIA',
+        fonte: sourceLabel,
+        recebimento: receipt,
+        recebimentos: receipts,
+        diff,
+        splitPaymentDetected: true,
+        automaticSplitMatch: true,
+        motivo: `Pagamento misto identificado no relatório detalhado da Trier: ${paymentBreakdownText(sale)}`,
+      })
+    })
+  }
+
   const resolvePending = (resolved) => {
     applyConfirmedMatches(resolved)
-    const eligiblePending = pending.filter((sale) => !resolved.has(sale.numero) && !manualBySale.has(reconciliationSaleKey(sale)))
+    resolveDetailedSplitPayments(resolved)
+    const eligiblePending = pending.filter((sale) => !sale.splitPayment && !resolved.has(sale.numero) && !manualBySale.has(reconciliationSaleKey(sale)))
     const timedMatches = assignGlobally(eligiblePending, true)
     timedMatches.forEach(({ sale, receipt, fonte, expectedType }) => resolved.set(sale.numero, buildMatchedResult(sale, receipt, receipt.fonte || fonte, expectedType)))
     const fallbackMatches = assignGlobally(eligiblePending.filter((sale) => !resolved.has(sale.numero)), false)
@@ -788,7 +995,14 @@ export function reconcile(files, toleranceValue, toleranceHours, manualUnmatches
           manualUnmatchReceiptKey: pairReceiptKeys(manualPair)[0] || '',
           manualUnmatchReceiptKeys: pairReceiptKeys(manualPair),
         })
-      } else resolved.set(sale.numero, { sale, status: 'SEM_RECEBIMENTO', fonte: getPool(sale).fonte, motivo: 'Nenhum recebimento correspondente encontrado' })
+      } else if (sale.splitPayment) resolved.set(sale.numero, {
+        sale,
+        status: 'SEM_RECEBIMENTO',
+        fonte: 'Pagamento misto',
+        splitPaymentDetected: true,
+        motivo: `Pagamento misto identificado na Trier (${paymentBreakdownText(sale)}), mas nem todas as parcelas eletrônicas foram localizadas`,
+      })
+      else resolved.set(sale.numero, { sale, status: 'SEM_RECEBIMENTO', fonte: getPool(sale).fonte, motivo: 'Nenhum recebimento correspondente encontrado' })
     })
   }
 
@@ -866,7 +1080,7 @@ export function reconcile(files, toleranceValue, toleranceHours, manualUnmatches
   })
   semVenda.forEach((item, index) => {
     semVenda.slice(index + 1).forEach((other) => {
-      if (other.status !== 'DUPLICADO' && item.fonte === other.fonte && Math.abs(item.valor - other.valor) < 0.005 && Math.abs(item.dt - other.dt) <= 60000) {
+      if (!item.semHorario && !other.semHorario && other.status !== 'DUPLICADO' && item.fonte === other.fonte && Math.abs(item.valor - other.valor) < 0.005 && Math.abs(item.dt - other.dt) <= 60000) {
         item.status = 'DUPLICADO'
         other.status = 'DUPLICADO'
       }

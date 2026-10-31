@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'utilitarios-dc-v4'
+const CACHE_VERSION = 'utilitarios-dc-v9'
 const CORE_CACHE = `${CACHE_VERSION}-core`
 const RUNTIME_CACHE = `${CACHE_VERSION}-runtime`
 const BASE_PATH = new URL('./', self.location.href).pathname
