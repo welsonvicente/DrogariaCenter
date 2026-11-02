@@ -12,6 +12,7 @@ const STAFF_STORAGE_KEY = 'drogaria-center:trier:staff-directory:v1'
 const STAFF_MIGRATION_KEY = 'drogaria-center:trier:staff-directory:migration:v3'
 const RESULT_TAB_STORAGE_KEY = 'drogaria-center:trier:result-tab:v1'
 const RESULT_DATE_STORAGE_KEY = 'drogaria-center:trier:result-date:v1'
+const RESULT_STAFF_STORAGE_KEY = 'drogaria-center:trier:result-staff:v1'
 const TABLE_UI_STORAGE_PREFIX = 'drogaria-center:trier:table-ui:v1:'
 const PENDING_UI_STORAGE_KEY = 'drogaria-center:trier:pending-ui:v1'
 const APP_BASE_PATH = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`
@@ -63,6 +64,11 @@ function loadResultTab() {
 
 function loadResultDate() {
   try { return window.localStorage.getItem(RESULT_DATE_STORAGE_KEY) || 'all' }
+  catch { return 'all' }
+}
+
+function loadResultStaff() {
+  try { return window.localStorage.getItem(RESULT_STAFF_STORAGE_KEY) || 'all' }
   catch { return 'all' }
 }
 
@@ -187,6 +193,16 @@ function systemFromPathname(pathname) {
   return Object.entries(SYSTEM_ROUTES).find(([, route]) => route === normalizedRoute)?.[0] || 'home'
 }
 
+function importedReportTotal(sourceKey, report) {
+  const rows = report?.rows ?? []
+  return rows.filter((row) => {
+    if (sourceKey === 'trier') return !row.isDev && (['PIX', 'CARTAO'].includes(row.forma) || (row.paymentBreakdown ?? []).some((payment) => ['PIX', 'CARTAO'].includes(payment.forma)))
+    if (sourceKey === 'pagpix') return !row.status || row.status === 'PAGO'
+    if (sourceKey === 'cielo') return !row.status || row.status === 'APROVADA'
+    return true
+  }).reduce((sum, row) => sum + Number(row.valor || 0), 0)
+}
+
 function FileSlot({ sourceKey, source, file, onFile, onDelete, pixSourceType = 'paggpix', onPixSourceTypeChange }) {
   const [reviewOpen, setReviewOpen] = useState(false)
   const input = useRef(null)
@@ -208,7 +224,7 @@ function FileSlot({ sourceKey, source, file, onFile, onDelete, pixSourceType = '
       <input ref={input} className="hidden" type="file" accept={acceptedFiles} onChange={(event) => onFile(event.target.files?.[0])} />
       {!file ? <button className="dropzone" onClick={() => input.current?.click()}><span className="dropzone-icon">＋</span><span>{uploadLabel}</span><small>Toque para selecionar o arquivo</small></button> : <>
         <div className="loaded-file">
-          <span className="loaded-file-icon">✓</span><b className="truncate">{file.fileName}</b><span className="text-muted whitespace-nowrap">{file.rows.length} linhas</span>
+          <span className="loaded-file-icon">✓</span><b className="truncate">{file.fileName}</b><span className="loaded-file-summary"><small>{file.rows.length} linhas</small><strong>{formatMoney(importedReportTotal(sourceKey, file))}</strong></span>
         </div>
         <div className="file-actions"><button className="swap-button" onClick={() => input.current?.click()}>Trocar arquivo</button><button className="review-button" onClick={() => setReviewOpen(!reviewOpen)}>{reviewOpen ? 'Ocultar linhas' : 'Revisar extração'}</button><button className="delete-file-button" onClick={() => onDelete?.(sourceKey)}>Apagar</button></div>
         {reviewOpen && <div className="review-box">{file.lines.map((line, index) => <div key={`${line}-${index}`}>{line}</div>)}</div>}
@@ -527,8 +543,15 @@ function SavedReportsPanel({ files, savedAt, restoring, message, onClear, onDele
       <div><span className="section-kicker">Histórico no navegador</span><strong>{restoring ? 'Restaurando seus relatórios...' : loadedReports.length ? 'Relatórios salvos automaticamente' : 'Importe uma vez e continue depois'}</strong><small>{loadedReports.length ? `${loadedReports.length} relatório(s) disponível(is) neste navegador${savedDate ? ` · salvo em ${savedDate}` : ''}.` : 'Os próximos relatórios importados ficarão guardados somente neste dispositivo.'}</small></div>
       {loadedReports.length > 0 && <button type="button" onClick={onClear}>Limpar histórico</button>}
     </div>
-    {loadedReports.length > 0 && <div className="saved-reports-list">{loadedReports.map(([key, report]) => <article key={key}><span>✓</span><div><b>{key === 'pagpix' ? report.reportType === 'stone' ? 'Extrato do banco Stone' : 'Relatório Detalhado PaggPix' : SOURCES[key].title}</b><small title={report.fileName}>{report.fileName} · {report.rows?.length ?? 0} linhas</small></div><button type="button" className="saved-report-delete" onClick={() => onDelete(key)} aria-label={`Apagar ${report.fileName}`} title={`Apagar ${report.fileName}`}>Apagar</button></article>)}</div>}
+    {loadedReports.length > 0 && <div className="saved-reports-list">{loadedReports.map(([key, report]) => <article key={key}><span>✓</span><div><b>{key === 'pagpix' ? report.reportType === 'stone' ? 'Extrato do banco Stone' : 'Relatório Detalhado PaggPix' : SOURCES[key].title}</b><small title={report.fileName}>{report.fileName} · {report.rows?.length ?? 0} linhas</small><strong>Total para conciliação: {formatMoney(importedReportTotal(key, report))}</strong></div><button type="button" className="saved-report-delete" onClick={() => onDelete(key)} aria-label={`Apagar ${report.fileName}`} title={`Apagar ${report.fileName}`}>Apagar</button></article>)}</div>}
     {message && <p className="saved-reports-message">{message}</p>}
+  </section>
+}
+
+function FinancialTotals({ cards, filterLabel }) {
+  return <section className="financial-totals" aria-label="Totais financeiros da conciliação">
+    <div className="financial-totals-heading"><div><span className="section-kicker">Conferência financeira</span><h3>Somas por resultado</h3><p>Valores calculados somente com os registros exibidos pelos filtros atuais.</p></div><span>{filterLabel}</span></div>
+    <div className="financial-totals-grid">{cards.map((card) => <article className={card.tone || ''} key={card.key}><small>{card.label}</small><strong>{formatMoney(card.value)}</strong><span>{card.count} {card.count === 1 ? card.singular || 'registro' : card.plural || 'registros'}{card.detail ? ` · ${card.detail}` : ''}</span></article>)}</div>
   </section>
 }
 
@@ -625,7 +648,7 @@ function SalesTable({ rows, markers = {}, onSaveMarker, onRemoveMarker, onSetMar
     return timeIsInRange(row.sale.hora, timeStart, timeEnd)
   })
   if (!rows.length) return <EmptyTable />
-  return <>{markerKind && <ReviewToolbar rows={keyedRows} markers={markers} reviewFilter={reviewFilter} onReviewFilter={setReviewFilter} onSetAll={onSetMarkers} staff={staff} selectedStaff={selectedStaff} onSelectedStaff={setSelectedStaff} timeStart={timeStart} timeEnd={timeEnd} onTimeStart={setTimeStart} onTimeEnd={setTimeEnd} />}<div className="table-meta"><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} registro(s).{activeFilterCount > 0 && <span className="active-filter-count">{activeFilterCount} filtro(s) ativo(s)</span>}</div><div className="table-meta-actions no-print">{activeFilterCount > 0 && <button type="button" className="clear-table-filters" onClick={clearTableFilters}>Limpar filtros</button>}<div className="column-order-hint">⠿ Arraste uma coluna ou use as setas para reorganizar</div></div></div><Table scrollRef={scrollRef} onScroll={saveScroll}><thead><tr>{orderedColumns.map((column, index) => <ReorderableColumnHeader key={column.key} column={column} index={index} total={orderedColumns.length} onMove={moveColumn} onShift={shiftColumn} />)}</tr><FilterRow tableId={`sales-filter-${viewKey}`} columns={orderedColumns} rows={keyedRows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
+  return <>{markerKind && <ReviewToolbar rows={keyedRows} markers={markers} reviewFilter={reviewFilter} onReviewFilter={setReviewFilter} onSetAll={onSetMarkers} staff={staff} selectedStaff={selectedStaff} onSelectedStaff={setSelectedStaff} timeStart={timeStart} timeEnd={timeEnd} onTimeStart={setTimeStart} onTimeEnd={setTimeEnd} />}<div className="table-meta"><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} registro(s). <b>Soma exibida: {formatMoney(filteredRows.reduce((sum, row) => sum + Number(row.sale.valor || 0), 0))}</b>{activeFilterCount > 0 && <span className="active-filter-count">{activeFilterCount} filtro(s) ativo(s)</span>}</div><div className="table-meta-actions no-print">{activeFilterCount > 0 && <button type="button" className="clear-table-filters" onClick={clearTableFilters}>Limpar filtros</button>}<div className="column-order-hint">⠿ Arraste uma coluna ou use as setas para reorganizar</div></div></div><Table scrollRef={scrollRef} onScroll={saveScroll}><thead><tr>{orderedColumns.map((column, index) => <ReorderableColumnHeader key={column.key} column={column} index={index} total={orderedColumns.length} onMove={moveColumn} onShift={shiftColumn} />)}</tr><FilterRow tableId={`sales-filter-${viewKey}`} columns={orderedColumns} rows={keyedRows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
     {filteredRows.map((row) => { const sale = row.sale; const marker = markers[row.__markerKey]; const rowClass = [row.returnSuggestion ? 'possible-return' : '', sale.splitPayment ? 'split-payment-row' : '', marker ? 'manually-reconciled' : ''].filter(Boolean).join(' '); return <tr className={rowClass} key={row.__markerKey || `${sale.numero}-${row.status}`}>{orderedColumns.map((column) => <td key={column.key}>{column.render ? column.render(row) : column.value(row)}</td>)}</tr> })}
     {!filteredRows.length && <tr className="empty-row"><td colSpan={orderedColumns.length}>Nenhum registro corresponde aos filtros.</td></tr>}
   </tbody></Table>{editingReview && <ReviewEditor key={editingReview.key} entry={editingReview} staff={staff} onSave={onSaveMarker} onRemove={onRemoveMarker} onClose={() => setEditingReview(null)} />}</>
@@ -649,7 +672,7 @@ function DiscountAuditTable({ rows, staff = DEFAULT_STAFF }) {
   const { orderedColumns, moveColumn, shiftColumn } = useReorderableColumns(columns, 'drogaria-center:trier:discount-column-order:v1')
   const filteredRows = columnFilter(rows, columns, filters)
   if (!rows.length) return <EmptyTable />
-  return <><div className="table-meta"><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} venda(s) com desconto alto.</div><div className="column-order-hint no-print">⠿ Arraste uma coluna ou use as setas para reorganizar</div></div><Table><thead><tr>{orderedColumns.map((column, index) => <ReorderableColumnHeader key={column.key} column={column} index={index} total={orderedColumns.length} onMove={moveColumn} onShift={shiftColumn} />)}</tr><FilterRow tableId="discount-filter" columns={orderedColumns} rows={rows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
+  return <><div className="table-meta"><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} venda(s) com desconto alto. <b>Soma exibida: {formatMoney(filteredRows.reduce((sum, sale) => sum + Number(sale.valor || 0), 0))}</b></div><div className="column-order-hint no-print">⠿ Arraste uma coluna ou use as setas para reorganizar</div></div><Table><thead><tr>{orderedColumns.map((column, index) => <ReorderableColumnHeader key={column.key} column={column} index={index} total={orderedColumns.length} onMove={moveColumn} onShift={shiftColumn} />)}</tr><FilterRow tableId="discount-filter" columns={orderedColumns} rows={rows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
     {filteredRows.map((sale) => <tr className="discount-high-row" key={`${sale.numero}-${sale.data}-${sale.hora}`}>{orderedColumns.map((column) => <td key={column.key}>{column.render ? column.render(sale) : column.value(sale)}</td>)}</tr>)}
     {!filteredRows.length && <tr className="empty-row"><td colSpan={orderedColumns.length}>Nenhum registro corresponde aos filtros.</td></tr>}
   </tbody></Table></>
@@ -681,7 +704,7 @@ function NoSaleTable({ rows, markers = {}, onSaveMarker, onRemoveMarker, onSetMa
     return timeIsInRange(row.hora, timeStart, timeEnd)
   })
   if (!rows.length) return <EmptyTable />
-  return <>{markerKind && <ReviewToolbar rows={keyedRows} markers={markers} reviewFilter={reviewFilter} onReviewFilter={setReviewFilter} onSetAll={onSetMarkers} staff={staff} selectedStaff={selectedStaff} onSelectedStaff={setSelectedStaff} timeStart={timeStart} timeEnd={timeEnd} onTimeStart={setTimeStart} onTimeEnd={setTimeEnd} />}<div className="table-meta"><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} registro(s).{activeFilterCount > 0 && <span className="active-filter-count">{activeFilterCount} filtro(s) ativo(s)</span>}</div><div className="table-meta-actions no-print">{activeFilterCount > 0 && <button type="button" className="clear-table-filters" onClick={clearTableFilters}>Limpar filtros</button>}<div className="column-order-hint">⠿ Arraste uma coluna ou use as setas para reorganizar</div></div></div><Table scrollRef={scrollRef} onScroll={saveScroll}><thead><tr>{orderedColumns.map((column, index) => <ReorderableColumnHeader key={column.key} column={column} index={index} total={orderedColumns.length} onMove={moveColumn} onShift={shiftColumn} />)}</tr><FilterRow tableId={`no-sale-filter-${viewKey}`} columns={orderedColumns} rows={keyedRows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
+  return <>{markerKind && <ReviewToolbar rows={keyedRows} markers={markers} reviewFilter={reviewFilter} onReviewFilter={setReviewFilter} onSetAll={onSetMarkers} staff={staff} selectedStaff={selectedStaff} onSelectedStaff={setSelectedStaff} timeStart={timeStart} timeEnd={timeEnd} onTimeStart={setTimeStart} onTimeEnd={setTimeEnd} />}<div className="table-meta"><div className="filter-result">Exibindo {filteredRows.length} de {rows.length} registro(s). <b>Soma exibida: {formatMoney(filteredRows.reduce((sum, row) => sum + Number(row.valor || 0), 0))}</b>{activeFilterCount > 0 && <span className="active-filter-count">{activeFilterCount} filtro(s) ativo(s)</span>}</div><div className="table-meta-actions no-print">{activeFilterCount > 0 && <button type="button" className="clear-table-filters" onClick={clearTableFilters}>Limpar filtros</button>}<div className="column-order-hint">⠿ Arraste uma coluna ou use as setas para reorganizar</div></div></div><Table scrollRef={scrollRef} onScroll={saveScroll}><thead><tr>{orderedColumns.map((column, index) => <ReorderableColumnHeader key={column.key} column={column} index={index} total={orderedColumns.length} onMove={moveColumn} onShift={shiftColumn} />)}</tr><FilterRow tableId={`no-sale-filter-${viewKey}`} columns={orderedColumns} rows={keyedRows} filters={filters} onChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))} /></thead><tbody>
     {filteredRows.map((row, index) => { const marker = markers[row.__markerKey]; return <tr className={marker ? 'manually-reconciled' : ''} key={row.__markerKey || `${row.fonte}-${row.data}-${row.hora}-${row.valor}-${index}`}>{orderedColumns.map((column) => <td key={column.key}>{column.render ? column.render(row) : column.value(row)}</td>)}</tr> })}
     {!filteredRows.length && <tr className="empty-row"><td colSpan={orderedColumns.length}>Nenhum registro corresponde aos filtros.</td></tr>}
   </tbody></Table>{editingReview && <ReviewEditor key={editingReview.key} entry={editingReview} staff={staff} onSave={onSaveMarker} onRemove={onRemoveMarker} onClose={() => setEditingReview(null)} />}</>
@@ -754,7 +777,8 @@ function PendingCenter({ cases, history, staff, splitSuggestionMinutes, onSimula
     return searchable.includes(normalizedSearch)
   })
   const criticalCount = cases.filter((item) => item.priority === 1).length
-  const affectedValue = cases.filter((item) => item.priority === 1).reduce((sum, item) => sum + item.value, 0)
+  const analysisValue = cases.reduce((sum, item) => sum + item.value, 0)
+  const criticalValue = cases.filter((item) => item.priority === 1).reduce((sum, item) => sum + item.value, 0)
   const splitSuggestionFor = (item) => item.row?.splitPaymentSuggestion || item.row?.splitSalesSuggestion || item.sale?.splitPayment
   const splitSuggestionText = (item) => item.sale?.splitPayment
     ? `Trier informa ${paymentBreakdownLabel(item.sale)}`
@@ -763,11 +787,11 @@ function PendingCenter({ cases, history, staff, splitSuggestionMinutes, onSimula
     : `2 recebimentos somam ${formatMoney(item.row.splitPaymentSuggestion?.total)} · diferença ${formatMoney(item.row.splitPaymentSuggestion?.diff)}`
 
   return <section className="pending-center">
-    <div className="pending-center-hero"><div><span className="section-kicker">Fila de trabalho</span><h3>Central de pendências</h3><p>Comece pelos casos prioritários. Clique em uma ocorrência para comparar os dados lado a lado e registrar a decisão.</p></div><div className="pending-center-kpis"><article><small>Pendências</small><strong>{cases.length}</strong></article><article className="critical"><small>Prioridade alta</small><strong>{criticalCount}</strong></article><article><small>Valor em análise</small><strong>{formatMoney(affectedValue)}</strong></article></div></div>
+    <div className="pending-center-hero"><div><span className="section-kicker">Fila de trabalho</span><h3>Central de pendências</h3><p>Comece pelos casos prioritários. Clique em uma ocorrência para comparar os dados lado a lado e registrar a decisão.</p></div><div className="pending-center-kpis"><article><small>Pendências</small><strong>{cases.length}</strong></article><article><small>Valor total em análise</small><strong>{formatMoney(analysisValue)}</strong></article><article className="critical"><small>Prioridade alta</small><strong>{criticalCount}</strong></article><article className="critical"><small>Valor prioridade alta</small><strong>{formatMoney(criticalValue)}</strong></article></div></div>
     <div className="pending-center-tools no-print"><label className="pending-search"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar venda, valor, horário, vendedor ou origem" /></label><div className="pending-filter-list">{[['all', 'Todos'], ['unreviewed', 'Ainda não vistos'], ['reviewed', 'Já analisados'], ['critical', 'Prioridade alta'], ['missing-receipt', 'Sem recebimento'], ['possible-return', 'Possível devolução'], ['missing-sale', 'Sem venda'], ['split-payment', 'Pagamento dividido'], ['value', 'Valor'], ['channel', 'Canal divergente'], ['time', 'Horário distante']].map(([key, label]) => <button type="button" key={key} className={filter === key ? 'active' : ''} onClick={() => key === 'split-payment' ? simulateSplitPayments() : setFilter(key)}>{label}</button>)}</div></div>
     <div className="pending-advanced-filters no-print"><label>Mostrar<select value={caseType} onChange={(event) => setCaseType(event.target.value)}><option value="all">Vendas e recebimentos</option><option value="sale">Somente vendas</option><option value="receipt">Somente recebimentos</option></select></label><label>Canal<select value={channel} onChange={(event) => setChannel(event.target.value)}><option value="all">Balcão e Delivery</option><option value="balcao">Somente Balcão</option><option value="delivery">Somente Delivery</option></select></label><label>Origem<select value={source} onChange={(event) => setSource(event.target.value)}><option value="all">PaggPix, Stone e Cielo</option><option value="paggpix">Somente PaggPix</option><option value="stone">Somente Stone</option><option value="cielo">Somente Cielo</option></select></label><label>Horário inicial<input type="time" value={timeStart} onChange={(event) => setTimeStart(event.target.value)} /></label><label>Horário final<input type="time" value={timeEnd} onChange={(event) => setTimeEnd(event.target.value)} /></label><label>Janela da simulação (min)<input type="number" min="1" max="720" step="1" value={splitWindow} onChange={(event) => setSplitWindow(event.target.value)} /></label><button type="button" className="pending-simulate" onClick={simulateSplitPayments}>Simular pagamentos divididos</button><button type="button" onClick={clearFilters}>Limpar filtros</button></div>
     <p className="pending-simulation-note no-print">A simulação considera vendas e recebimentos dentro de {splitSuggestionMinutes} minuto(s). Ela apenas sugere combinações; a conciliação só acontece depois da sua confirmação.</p>
-    <div className="pending-filter-result">Exibindo <b>{visibleCases.length}</b> de {cases.length} pendência(s).</div>
+    <div className="pending-filter-result">Exibindo <b>{visibleCases.length}</b> de {cases.length} pendência(s) · Soma exibida: <b>{formatMoney(visibleCases.reduce((sum, item) => sum + Number(item.value || 0), 0))}</b>.</div>
     <div className="pending-center-layout"><div className="pending-case-list">{visibleCases.map((item) => <button type="button" className={`pending-case priority-${item.priority}${item.reviewed ? ' reviewed' : ''}${splitSuggestionFor(item) ? ' split-suggestion' : ''}`} key={item.id} onClick={() => onOpen(item)}><span className="pending-priority">{item.reviewed ? '✓ Visto' : splitSuggestionFor(item) ? 'Sugestão' : item.priority === 1 ? 'Alta' : item.priority === 2 ? 'Média' : 'Revisar'}</span><div className="pending-case-main"><strong>{item.title}</strong><b>{item.sale ? `Venda ${item.sale.numero}` : `${item.receipt.fonte} · recebimento`}</b><small>{item.sale ? `${item.sale.data} · ${item.sale.hora || 'sem horário'} · ${staffNameForRow(item.sale, 'Trier', staff)}` : `${item.receipt.data} · ${item.receipt.hora || 'sem horário'} · ${item.receipt.tipo || item.receipt.bandeira || 'tipo não informado'}`}</small>{splitSuggestionFor(item) && <small className="pending-split-note">{splitSuggestionText(item)}</small>}{item.reviewNote && <small className="pending-review-note">✓ {item.reviewNote}</small>}<span className="pending-tags"><i>{item.sale ? (item.sale.tele === 'Sim' ? 'Delivery' : 'Balcão') : item.receipt?.fonte || 'Recebimento'}</i>{item.issues.map((issue) => <i key={issue}>{ISSUE_LABELS[issue]}</i>)}</span></div><div className="pending-case-value"><strong>{formatMoney(item.value)}</strong>{item.receipt && item.sale && <small>Receb.: {formatMoney(item.receipt.valor)}</small>}<span>Investigar →</span></div></button>)}{!visibleCases.length && <div className="pending-empty"><span>✓</span><b>Nenhuma ocorrência corresponde a esses filtros.</b></div>}</div>
       <aside className="change-history"><div><span className="section-kicker">Rastreabilidade</span><h4>Histórico de alterações</h4><p>As decisões ficam salvas neste navegador.</p></div><div className="history-list">{history.slice(0, 12).map((entry) => <article key={entry.id}><span className={`history-dot ${entry.type}`} /><div><b>{historyTypeLabel(entry.type)}</b><small>{entry.saleNumber ? `Venda ${entry.saleNumber} · ` : ''}{entry.description}</small><time>{new Date(entry.timestamp).toLocaleString('pt-BR')}</time></div></article>)}{!history.length && <div className="history-empty">As próximas conciliações, desfazimentos e observações aparecerão aqui.</div>}</div></aside>
     </div>
@@ -1382,6 +1406,7 @@ export default function App() {
   const [output, setOutput] = useState(null)
   const [tab, setTab] = useState(loadResultTab)
   const [resultDate, setResultDate] = useState(loadResultDate)
+  const [resultStaffId, setResultStaffId] = useState(loadResultStaff)
   const [error, setError] = useState('')
   const [analystMarkers, setAnalystMarkers] = useState(loadAnalystMarkers)
   const [manualUnmatches, setManualUnmatches] = useState({})
@@ -1415,6 +1440,11 @@ export default function App() {
     try { window.localStorage.setItem(RESULT_DATE_STORAGE_KEY, resultDate) }
     catch { /* mantém o filtro funcionando mesmo sem armazenamento */ }
   }, [resultDate])
+
+  useEffect(() => {
+    try { window.localStorage.setItem(RESULT_STAFF_STORAGE_KEY, resultStaffId) }
+    catch { /* mantém o filtro funcionando mesmo sem armazenamento */ }
+  }, [resultStaffId])
 
   useEffect(() => {
     let active = true
@@ -1488,6 +1518,7 @@ export default function App() {
       setPixSourceType('paggpix')
       setOutput(null)
       setResultDate('all')
+      setResultStaffId('all')
       setManualUnmatches({})
       setManualMatches({})
       setManualReceipts({})
@@ -1520,6 +1551,7 @@ export default function App() {
     setReturnMatches(emptyManualState)
     setInvestigatingCase(null)
     setResultDate('all')
+    setResultStaffId('all')
     setError('')
     if (key === 'trier') setDiscountAudit(null)
 
@@ -1758,21 +1790,47 @@ export default function App() {
   const allNoSale = output?.semVenda ?? []
   const allCrediarioCartao = output?.crediarioCartao ?? []
   const allFechamentoCrediario = output?.fechamentoCrediario ?? []
-  const availableDates = [...new Set([...allResults.map((row) => row.sale?.data), ...allNoSale.map((row) => row.data), ...allCrediarioCartao.map((row) => row.data)].filter(Boolean).map(normalizedDateKey))].sort((first, second) => dateKeyValue(second) - dateKeyValue(first))
+  const resultStaffOptions = [...staff].filter((person) => person.active !== false || person.id === resultStaffId).sort((first, second) => first.name.localeCompare(second.name, 'pt-BR'))
+  const staffMatchesSale = (row) => {
+    if (resultStaffId === 'all') return true
+    return staffForRow(row.sale, 'Trier', staff)?.id === resultStaffId
+  }
+  const staffMatchesReceipt = (row) => {
+    if (resultStaffId === 'all') return true
+    return row.fonte === 'PaggPix' && staffForRow(row, 'PaggPix', staff)?.id === resultStaffId
+  }
+  const staffScopedResults = allResults.filter(staffMatchesSale)
+  const staffScopedNoSale = allNoSale.filter(staffMatchesReceipt)
+  const staffScopedCrediario = resultStaffId === 'all' ? allCrediarioCartao : []
+  const staffScopedFechamento = resultStaffId === 'all' ? allFechamentoCrediario : []
+  const availableDates = [...new Set([...staffScopedResults.map((row) => row.sale?.data), ...staffScopedNoSale.map((row) => row.data), ...staffScopedCrediario.map((row) => row.data)].filter(Boolean).map(normalizedDateKey))].sort((first, second) => dateKeyValue(second) - dateKeyValue(first))
   const dateMatches = (value) => resultDate === 'all' || normalizedDateKey(value) === resultDate
-  const results = allResults.filter((row) => dateMatches(row.sale?.data))
-  const noSale = allNoSale.filter((row) => dateMatches(row.data))
-  const crediarioCartao = allCrediarioCartao.filter((row) => dateMatches(row.data))
-  const fechamentoCrediario = allFechamentoCrediario.filter((row) => dateMatches(row.data))
+  const results = staffScopedResults.filter((row) => dateMatches(row.sale?.data))
+  const noSale = staffScopedNoSale.filter((row) => dateMatches(row.data))
+  const crediarioCartao = staffScopedCrediario.filter((row) => dateMatches(row.data))
+  const fechamentoCrediario = staffScopedFechamento.filter((row) => dateMatches(row.data))
   const visibleOutput = output ? { ...output, results, semVenda: noSale, crediarioCartao, fechamentoCrediario } : null
   const pendingCases = buildPendingCases(results, noSale, toleranceHours, reconciliationHistory)
   const accounting = results.filter((row) => !['DEVOLUCAO', 'DEVOLUCAO_CONCILIADA'].includes(row.status))
+  const reconciledRows = accounting.filter((row) => row.status === 'CONCILIADA')
+  const divergentRows = accounting.filter((row) => row.status === 'DIVERGENCIA')
+  const missingRows = accounting.filter((row) => row.status === 'SEM_RECEBIMENTO')
+  const splitRows = accounting.filter((row) => row.sale.splitPayment)
+  const returnRows = results.filter((row) => row.status === 'DEVOLUCAO')
   const counts = {
-    total: accounting.length, pix: accounting.filter((row) => row.sale.forma === 'PIX').length, card: accounting.filter((row) => row.sale.forma === 'CARTAO').length, splitPayments: accounting.filter((row) => row.sale.splitPayment).length, reconciled: accounting.filter((row) => row.status === 'CONCILIADA').length, missing: accounting.filter((row) => row.status === 'SEM_RECEBIMENTO').length, divergent: accounting.filter((row) => row.status === 'DIVERGENCIA').length, pixNoSale: noSale.filter((row) => ['PaggPix', 'Stone'].includes(row.fonte)).length, cardNoSale: noSale.filter((row) => row.fonte === 'Cielo').length, duplicates: noSale.filter((row) => row.status === 'DUPLICADO').length, returns: results.filter((row) => row.status === 'DEVOLUCAO').length, returnedReconciled: results.filter((row) => row.status === 'DEVOLUCAO_CONCILIADA').length,
+    total: accounting.length, pix: accounting.filter((row) => row.sale.forma === 'PIX').length, card: accounting.filter((row) => row.sale.forma === 'CARTAO').length, splitPayments: splitRows.length, reconciled: reconciledRows.length, missing: missingRows.length, divergent: divergentRows.length, pixNoSale: noSale.filter((row) => ['PaggPix', 'Stone'].includes(row.fonte)).length, cardNoSale: noSale.filter((row) => row.fonte === 'Cielo').length, duplicates: noSale.filter((row) => row.status === 'DUPLICADO').length, returns: returnRows.length, returnedReconciled: results.filter((row) => row.status === 'DEVOLUCAO_CONCILIADA').length,
   }
   const totalValue = accounting.reduce((sum, row) => sum + row.sale.valor, 0)
-  const matchedValue = accounting.filter((row) => ['CONCILIADA', 'DIVERGENCIA'].includes(row.status)).reduce((sum, row) => sum + row.sale.valor, 0)
-  const divergentValue = [...accounting.filter((row) => row.status === 'DIVERGENCIA').reduce((groups, row) => {
+  const reconciledValue = reconciledRows.reduce((sum, row) => sum + row.sale.valor, 0)
+  const divergentSalesValue = divergentRows.reduce((sum, row) => sum + row.sale.valor, 0)
+  const missingValue = missingRows.reduce((sum, row) => sum + row.sale.valor, 0)
+  const noSaleValue = noSale.reduce((sum, row) => sum + Number(row.valor || 0), 0)
+  const splitValue = splitRows.reduce((sum, row) => sum + row.sale.valor, 0)
+  const returnValue = returnRows.reduce((sum, row) => sum + Math.abs(Number(row.sale.valor || 0)), 0)
+  const pendingValue = pendingCases.reduce((sum, item) => sum + Number(item.value || 0), 0)
+  const crediarioValue = crediarioCartao.reduce((sum, row) => sum + Number(row.valor || 0), 0)
+  const matchedValue = reconciledValue + divergentSalesValue
+  const divergentValue = [...divergentRows.reduce((groups, row) => {
     const key = row.manualMatchGroupId || `sale:${reconciliationSaleKey(row.sale)}`
     if (!groups.has(key)) groups.set(key, Math.abs(row.diff))
     return groups
@@ -1781,11 +1839,28 @@ export default function App() {
   const highDiscountTotal = highDiscountRows.reduce((sum, sale) => sum + Number(sale.descontoValor || 0), 0)
   const highDiscountMaxPercent = highDiscountRows.reduce((highest, sale) => Math.max(highest, Number(sale.descontoPercentual || 0)), 0)
   const kpis = [['Total de vendas', counts.total], ['Vendas PIX', counts.pix], ['Vendas cartão', counts.card], ...(counts.splitPayments ? [['Pagamentos mistos', counts.splitPayments]] : []), ['Conciliadas', counts.reconciled], ['Não conciliadas', counts.missing], ...(counts.returnedReconciled ? [['Conciliadas por devolução', counts.returnedReconciled]] : []), ['PIX sem venda', counts.pixNoSale], ['Cielo sem venda', counts.cardNoSale], ...(fechamentoCrediario.length ? [['Crediário recebido no cartão', formatMoney(crediarioCartao.reduce((sum, row) => sum + row.valor, 0))]] : []), ['Recebimentos duplicados', counts.duplicates], ['Valor conciliado', formatMoney(matchedValue)], ['Valor divergente', formatMoney(divergentValue)], ['% conciliação', `${totalValue ? ((matchedValue / totalValue) * 100).toFixed(1) : '0.0'}%`]]
+  const financialCards = [
+    { key: 'analysis', label: 'Valor total das vendas analisadas', value: totalValue, count: counts.total, singular: 'venda', plural: 'vendas' },
+    { key: 'pending', label: 'Valor total em análise', value: pendingValue, count: pendingCases.length, singular: 'pendência', plural: 'pendências', tone: 'warning' },
+    { key: 'reconciled', label: 'Total das conciliadas', value: reconciledValue, count: counts.reconciled, singular: 'venda', plural: 'vendas', tone: 'success' },
+    { key: 'divergent', label: 'Total com divergência', value: divergentSalesValue, count: counts.divergent, singular: 'venda', plural: 'vendas', detail: `diferença ${formatMoney(divergentValue)}`, tone: 'warning' },
+    { key: 'missing', label: 'Total sem recebimento', value: missingValue, count: counts.missing, singular: 'venda', plural: 'vendas', tone: 'danger' },
+    { key: 'no-sale', label: 'Total sem venda', value: noSaleValue, count: noSale.length, singular: 'recebimento', plural: 'recebimentos', tone: 'danger' },
+    { key: 'split', label: 'Total de pagamentos mistos', value: splitValue, count: counts.splitPayments, singular: 'venda', plural: 'vendas' },
+    { key: 'returns', label: 'Total de devoluções', value: returnValue, count: counts.returns, singular: 'devolução', plural: 'devoluções' },
+    ...(fechamentoCrediario.length ? [{ key: 'credit', label: 'Total crediário recebido no cartão', value: crediarioValue, count: crediarioCartao.length, singular: 'recebimento', plural: 'recebimentos' }] : []),
+  ]
+  const selectedResultStaff = resultStaffOptions.find((person) => person.id === resultStaffId)
+  const resultFilterLabel = `${resultDate === 'all' ? 'Todas as datas' : resultDate} · ${selectedResultStaff?.name || 'Todos os colaboradores'}`
   const tabs = [['resumo', 'Resumo'], ['pendencias', `Central de pendências (${pendingCases.length})`], ...(counts.splitPayments ? [['pagamento_misto', `Pagamentos mistos (${counts.splitPayments})`]] : []), ['conciliada', `Conciliadas (${counts.reconciled})`], ['divergencia', `Divergências (${counts.divergent})`], ['sem_recebimento', `Sem recebimento (${counts.missing})`], ['sem_venda', `Sem venda (${noSale.length})`], ...(fechamentoCrediario.length ? [['crediario_cartao', `Crediário cartão (${crediarioCartao.length})`]] : []), ...((counts.returns || counts.returnedReconciled) ? [['devolucao', `Devoluções (${counts.returns}${counts.returnedReconciled ? ` · ${counts.returnedReconciled} conciliada(s)` : ''})`]] : [])]
 
   useEffect(() => {
     if (output && resultDate !== 'all' && !availableDates.includes(resultDate)) setResultDate('all')
   }, [output, resultDate, availableDates.join('|')])
+
+  useEffect(() => {
+    if (resultStaffId !== 'all' && !staff.some((person) => person.id === resultStaffId)) setResultStaffId('all')
+  }, [resultStaffId, staff])
 
   useEffect(() => {
     if (output && !tabs.some(([key]) => key === tab)) setTab('resumo')
@@ -1822,7 +1897,7 @@ export default function App() {
     <section className="no-print controls"><div className="controls-title"><span className="section-kicker">Etapa 2</span><strong>Defina as tolerâncias</strong></div><label>Tolerância de valor (R$)<input type="number" min="0" step="0.1" value={toleranceValue} onChange={(event) => setToleranceValue(event.target.value)} /></label><label>Tolerância de horário (h)<input type="number" min="0" step="0.5" value={toleranceHours} onChange={(event) => setToleranceHours(event.target.value)} /></label><button className="primary-button" disabled={!canRun} onClick={runReconciliation}><span>Executar conciliação</span><b aria-hidden="true">→</b></button></section>
     <section className="discount-audit-controls no-print"><div className="discount-audit-heading"><span className="discount-audit-icon">%</span><div><span className="section-kicker">Auditoria da Trier</span><strong>Verificar vendas com desconto alto</strong><small>Escolha um limite por percentual ou por valor. Devoluções não entram nessa análise.</small></div></div><div className="discount-audit-form"><div className="discount-mode-toggle" role="group" aria-label="Tipo do limite de desconto"><button type="button" className={discountMode === 'percent' ? 'active' : ''} aria-pressed={discountMode === 'percent'} onClick={() => setDiscountMode('percent')}>% Percentual</button><button type="button" className={discountMode === 'value' ? 'active' : ''} aria-pressed={discountMode === 'value'} onClick={() => setDiscountMode('value')}>R$ Valor</button></div><label>{discountMode === 'percent' ? 'Desconto mínimo (%)' : 'Desconto mínimo (R$)'}<input type="number" min="0" step={discountMode === 'percent' ? '0.1' : '0.01'} value={discountMode === 'percent' ? discountPercentThreshold : discountValueThreshold} onChange={(event) => discountMode === 'percent' ? setDiscountPercentThreshold(event.target.value) : setDiscountValueThreshold(event.target.value)} /></label><button type="button" className="discount-audit-button" disabled={!files.trier} onClick={runDiscountAudit}>Verificar descontos altos <b aria-hidden="true">→</b></button></div></section>
     {discountAudit && <section className="discount-audit-results"><div className="discount-results-heading"><div><span className="section-kicker">Resultado da auditoria</span><h2>Descontos altos</h2><p>Limite aplicado: <b>{discountAudit.mode === 'percent' ? `${discountAudit.threshold.toFixed(2).replace('.', ',')}%` : formatMoney(discountAudit.threshold)}</b>. A lista está ordenada do maior desconto para o menor.</p></div><button type="button" className="discount-close no-print" onClick={() => setDiscountAudit(null)}>Fechar análise</button></div><div className="discount-kpis"><article><small>Vendas encontradas</small><strong>{highDiscountRows.length}</strong></article><article><small>Total concedido</small><strong>{formatMoney(highDiscountTotal)}</strong></article><article><small>Maior percentual</small><strong>{highDiscountMaxPercent.toFixed(2).replace('.', ',')}%</strong></article></div>{highDiscountRows.length ? <DiscountAuditTable rows={highDiscountRows} staff={staff} /> : <div className="discount-empty"><span>✓</span><div><b>Nenhuma venda ultrapassou esse limite.</b><small>Você pode reduzir o percentual ou o valor e verificar novamente.</small></div></div>}</section>}
-    {output && <section className="results-section"><div className="results-heading"><span className="section-kicker">Etapa 3</span><h2>Resultado da conciliação</h2><p>Revise os indicadores e filtre cada coluna para investigar os registros.</p></div><div className="result-date-filter no-print"><div><span>Data da análise</span><strong>{resultDate === 'all' ? 'Todas as datas importadas' : resultDate}</strong></div><label>Selecionar data<select value={resultDate} onChange={(event) => setResultDate(event.target.value)}><option value="all">Todas as datas</option>{availableDates.map((date) => <option value={date} key={date}>{date}</option>)}</select></label>{resultDate !== 'all' && <button type="button" onClick={() => setResultDate('all')}>Limpar filtro</button>}</div><div className="kpi-grid">{kpis.map(([label, value]) => <div className="kpi" key={label}><div>{label}</div><strong>{value}</strong></div>)}</div>
+    {output && <section className="results-section"><div className="results-heading"><span className="section-kicker">Etapa 3</span><h2>Resultado da conciliação</h2><p>Revise os indicadores e filtre cada coluna para investigar os registros.</p></div><div className="result-date-filter no-print"><div><span>Filtros da análise</span><strong>{resultFilterLabel}</strong></div><label>Selecionar data<select value={resultDate} onChange={(event) => setResultDate(event.target.value)}><option value="all">Todas as datas</option>{availableDates.map((date) => <option value={date} key={date}>{date}</option>)}</select></label><label>Selecionar colaborador<select value={resultStaffId} onChange={(event) => setResultStaffId(event.target.value)}><option value="all">Todos os colaboradores</option>{resultStaffOptions.map((person) => <option value={person.id} key={person.id}>{person.name} · nº {person.trierCode}</option>)}</select></label>{(resultDate !== 'all' || resultStaffId !== 'all') && <button type="button" onClick={() => { setResultDate('all'); setResultStaffId('all') }}>Limpar filtros</button>}</div><div className="kpi-grid">{kpis.map(([label, value]) => <div className="kpi" key={label}><div>{label}</div><strong>{value}</strong></div>)}</div><FinancialTotals cards={financialCards} filterLabel={resultFilterLabel} />
       <div className="no-print tabs"><div className="tab-list">{tabs.map(([key, label]) => <button key={key} className={tab === key ? 'tab active' : 'tab'} onClick={() => setTab(key)}>{label}</button>)}</div><div className="export-list"><button onClick={() => downloadCsv(visibleOutput, analystMarkers, staff)}>⇩ CSV</button><button onClick={() => downloadExcel(visibleOutput, analystMarkers, staff)}>⇩ Excel</button><button onClick={() => window.print()}>⇩ PDF</button></div></div>
       {tab === 'resumo' && <div className="summary-card">Das <b>{counts.total}</b> vendas eletrônicas da Relação de Vendas, <b className="text-green">{counts.reconciled}</b> foram conciliadas, <b className="text-amber">{counts.divergent}</b> tiveram divergência de valor dentro da tolerância e <b className="text-rust">{counts.missing}</b> não encontraram recebimento correspondente.{counts.splitPayments > 0 && <><br /><br /><b className="text-green">{counts.splitPayments}</b> venda(s) tiveram duas ou mais formas de pagamento identificadas diretamente no relatório detalhado da Trier.</>}{counts.returnedReconciled > 0 && <><br /><br /><b className="text-green">{counts.returnedReconciled}</b> venda(s) foram confirmadas manualmente como devolvidas e saíram de “Sem recebimento”.</>}{noSale.length > 0 && <><br /><br />Também foram encontrados <b className="text-rust">{noSale.length}</b> recebimentos sem venda correspondente, sendo <b>{counts.duplicates}</b> identificados como possível duplicidade.</>}{crediarioCartao.length > 0 && <><br /><br /><b className="text-green">{crediarioCartao.length}</b> recebimento(s) da Cielo, somando <b>{formatMoney(crediarioCartao.reduce((sum, row) => sum + row.valor, 0))}</b>, foram identificados como <b>Contas Recebidas Crediário (Cartão)</b> pelo Fechamento de Caixa.</>}{counts.returns > 0 && <><br /><br /><b>{counts.returns}</b> linha(s) de devolução foram identificadas no relatório Trier.</>}<br /><br />Use as abas para revisar cada grupo ou exporte a tabela final em Excel, CSV ou PDF.</div>}
       {tab === 'pendencias' && <PendingCenter cases={pendingCases} history={reconciliationHistory} staff={staff} splitSuggestionMinutes={splitSuggestionMinutes} onSimulateSplitPayments={simulateSplitPayments} onOpen={setInvestigatingCase} />}
